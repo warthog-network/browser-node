@@ -123,8 +123,17 @@ npm run snapshot:link
 
 - `public/snapshot/manifest.json` is committed (height / size metadata).
 - `public/snapshot/chain.db3` is **gitignored** (multi‑GB — do not force-add or Netlify-deploy).
-- UI: **Import public snapshot** when no local DB is present.
-- Override URL: `PUBLIC_SNAPSHOT_URL=https://…` or `?snapshot=/path-or-url`.
+- UI probes the `.db3` URL on load; **Import snapshot** only appears when the file is reachable.
+- **Local:** `npm run snapshot:link` + `npm run dev` → same-origin path works.
+- **Production:** host on **Official1** (`https://warthognode.duckdns.org/snapshot/chain.db3`).
+  Full ops: **[`docs/OFFICIAL1-SNAPSHOT.md`](docs/OFFICIAL1-SNAPSHOT.md)**  
+  (nginx `location /snapshot/` + checkpointed copy under `/var/www/warthog-snapshot/`).
+  - `manifest.json` already points at that absolute URL once the VPS file exists.
+  - Optional Netlify env: `PUBLIC_SNAPSHOT_URL=https://warthognode.duckdns.org/snapshot/chain.db3`
+  - Host must send `Cross-Origin-Resource-Policy: cross-origin` (COEP) + CORS GET
+  - never route multi‑GB through `/api/proxy`
+  - Until the VPS serves 200, UI hides one-click import; users can still **Choose file…**
+- Override also: `?snapshot=https://…/chain.db3`
 - Official1 may rate-limit ~1 `/ws` connect per public IP (~30s); failed GRUNT can ban longer.
 - If GRUNT succeeds then socket closes after first Init (`tx 61B` → `1006`), that is a **post-handshake** issue (not “can’t connect”) — see InitMsgV3 notes below.
 

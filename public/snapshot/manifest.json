@@ -1,11 +1,12 @@
 {
   "name": "chain.db3",
-  "url": "/snapshot/chain.db3",
+  "url": "https://warthognode.duckdns.org/snapshot/chain.db3",
   "bytes": 3485917184,
   "height": 4764332,
   "journalMode": "delete",
   "network": "mainnet",
-  "preparedAt": "2026-07-11T22:23:23Z",
-  "publishedAt": "2026-07-11T22:56:23Z",
-  "note": "Checkpointed DELETE-mode mainnet chain for browser WASM fast-start. Same-origin path works under COEP."
+  "preparedAt": "2026-07-11T22:15:21Z",
+  "publishedAt": "2026-07-11T23:26:43Z",
+  "note": "Checkpointed DELETE-mode mainnet chain for browser WASM fast-start. Hosted on Official1 (not Netlify). Requires CORP: cross-origin under COEP. Local dev: npm run snapshot:link + /snapshot/chain.db3 via ?snapshot= or PUBLIC_SNAPSHOT_URL."
 }
+

@@ -36,9 +36,10 @@ import {
   isSqliteDiskIoError,
 } from '../lib/opfsSnapshot.js';
 import {
-  fetchPublicSnapshotManifest,
+  loadAvailablePublicSnapshot,
   publicSnapshotLabel,
   resolvePublicSnapshotUrl,
+  snapshotMissingTip,
 } from '../lib/snapshotPublic.js';
 import { formatHashrate, shortAddr } from '../lib/presets.js';
 import './NodeDashboard.css';
@@ -263,15 +264,17 @@ export default function WasmBrowserNode() {
         runBridgeProbes(peers);
       }
 
-      // Public snapshot catalog (small JSON; .db3 is optional / large).
+      // Public snapshot: manifest may exist without the multi‑GB file (Netlify).
+      // Only advertise one-click import when the .db3 URL actually responds.
       try {
-        const man = await fetchPublicSnapshotManifest();
+        const man = await loadAvailablePublicSnapshot();
         if (!cancelled && man) {
           setPublicSnapshot(man);
           if (man.url && !snapshotUrl) {
-            // Prefer manifest URL when present (may be absolute CDN later).
             setSnapshotUrl(man.url);
           }
+        } else if (!cancelled) {
+          setPublicSnapshot(null);
         }
       } catch {
         // ignore
@@ -337,9 +340,15 @@ export default function WasmBrowserNode() {
     [isolated, sab, running, starting, stopping, storageFatal, clearingOpfs, snapshotBusy],
   );
 
+  /** File/URL import when idle — site one-click needs publicSnapshot (probed). */
   const canImportPublicSnapshot = useMemo(
     () => opfsOk && !running && !starting && !stopping && !snapshotBusy && !clearingOpfs,
     [opfsOk, running, starting, stopping, snapshotBusy, clearingOpfs],
+  );
+
+  const canImportSiteSnapshot = useMemo(
+    () => canImportPublicSnapshot && !!publicSnapshot?.url,
+    [canImportPublicSnapshot, publicSnapshot],
   );
 
   /** Stop only while a node is (or was) running — not mid-start or mid-recover. */
@@ -715,11 +724,8 @@ export default function WasmBrowserNode() {
       if (!result.ok) {
         setError(result.error || 'Snapshot URL import failed');
         appendLog(`[snapshot] FAIL — ${result.error}`);
-        if (url.startsWith('/snapshot/')) {
-          appendLog(
-            '[snapshot] tip: same-origin file missing? Run `npm run snapshot:link` '
-            + '(links ~/Downloads/chain.db3 into public/snapshot/) and restart dev.',
-          );
+        if (/404|403|HTTP/.test(String(result.error || '')) || url.startsWith('/snapshot/')) {
+          appendLog(snapshotMissingTip(url));
         }
       } else {
         appendLog(
@@ -986,20 +992,18 @@ export default function WasmBrowserNode() {
               {stopping ? 'Stopping…' : 'Stop node'}
             </button>
           )}
-          {!nodeHealthy && !localDbInfo?.present && (
+          {!nodeHealthy && !localDbInfo?.present && publicSnapshot && (
             <button
               type="button"
               className="btn btn--ghost"
               onClick={importPublicSnapshot}
-              disabled={!canImportPublicSnapshot}
+              disabled={!canImportSiteSnapshot}
               title={
-                publicSnapshot
-                  ? `Import site chain.db3 (${formatBytes(publicSnapshot.bytes || 0)}`
-                    + (publicSnapshot.height != null
-                      ? `, height ${Number(publicSnapshot.height).toLocaleString()}`
-                      : '')
-                    + ')'
-                  : 'Import site-hosted chain.db3 into this browser'
+                `Import site chain.db3 (${formatBytes(publicSnapshot.bytes || 0)}`
+                + (publicSnapshot.height != null
+                  ? `, height ${Number(publicSnapshot.height).toLocaleString()}`
+                  : '')
+                + ')'
               }
             >
               {snapshotBusy ? 'Importing snapshot…' : 'Import snapshot'}
@@ -1327,11 +1331,16 @@ export default function WasmBrowserNode() {
               {localDbInfo?.present
                 ? <strong>{formatBytes(localDbInfo.bytes)}</strong>
                 : <em>none</em>}
-              {publicSnapshot?.height != null && (
+              {publicSnapshot?.height != null ? (
                 <>
                   {' · '}Site offer:{' '}
                   <strong>h{Number(publicSnapshot.height).toLocaleString()}</strong>
                   {' '}({formatBytes(publicSnapshot.bytes || 0)})
+                </>
+              ) : (
+                <>
+                  {' · '}Site offer: <em>none on this host</em>
+                  {' '}(use Choose file or a CDN URL)
                 </>
               )}
             </p>
@@ -1340,7 +1349,12 @@ export default function WasmBrowserNode() {
                 type="button"
                 className="btn"
                 onClick={importPublicSnapshot}
-                disabled={!canImportPublicSnapshot}
+                disabled={!canImportSiteSnapshot}
+                title={
+                  publicSnapshot
+                    ? undefined
+                    : 'No reachable site snapshot (Netlify does not ship multi‑GB chain.db3)'
+                }
               >
                 {snapshotBusy ? 'Importing…' : 'Import site snapshot'}
               </button>
@@ -1382,7 +1396,9 @@ export default function WasmBrowserNode() {
             </div>
             <p className="muted small" style={{ margin: '0.5rem 0 0' }}>
               Own file must be checkpointed DELETE-mode <code>chain.db3</code> only (no <code>-wal</code>).
-              Refresh site file: <code>npm run snapshot:link</code>.
+              Local dev: <code>npm run snapshot:link</code>. Production: host the .db3 on a CDN/VPS with
+              {' '}<code>Cross-Origin-Resource-Policy</code> and set <code>PUBLIC_SNAPSHOT_URL</code>
+              {' '}or <code>manifest.url</code> — do not force-deploy multi‑GB to Netlify.
             </p>
           </div>
 

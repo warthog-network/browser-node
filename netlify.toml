@@ -1,7 +1,9 @@
 [build]
   command = "npm run build"
   publish = "dist"
-  environment = { NODE_VERSION = "22" }
+  # PUBLIC_SNAPSHOT_URL is baked into the client at build (import.meta.env).
+  # Points at Official1 static chain.db3 — do not put multi‑GB .db3 on Netlify.
+  environment = { NODE_VERSION = "22", PUBLIC_SNAPSHOT_URL = "https://warthognode.duckdns.org/snapshot/chain.db3" }
 
 [functions]
   node_bundler = "esbuild"

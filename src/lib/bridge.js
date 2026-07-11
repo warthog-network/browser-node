@@ -43,6 +43,11 @@ export const OFFICIAL1 = {
   wsBridge: 'wss://warthognode.duckdns.org/ws',
   /** Client RPC subscription stream (dashboards) — not the P2P bridge. */
   wsStream: 'wss://warthognode.duckdns.org/stream',
+  /**
+   * Public checkpointed chain.db3 for browser OPFS fast-start (static nginx).
+   * Not the live node DB — see docs/OFFICIAL1-SNAPSHOT.md.
+   */
+  snapshotChainDb: 'https://warthognode.duckdns.org/snapshot/chain.db3',
   webrtc: true,
   flags: [
     '--rpc=127.0.0.1:3000',

@@ -73,9 +73,17 @@ if (r.status === 0) {
   }
 }
 
+// Default local same-origin. Production uses Official1 absolute URL
+// (see docs/OFFICIAL1-SNAPSHOT.md). Override: SNAPSHOT_PUBLIC_URL=https://…
+const publicUrl = String(
+  process.env.SNAPSHOT_PUBLIC_URL
+  || process.env.PUBLIC_SNAPSHOT_URL
+  || '/snapshot/chain.db3',
+).trim();
+
 const manifest = {
   name: 'chain.db3',
-  url: '/snapshot/chain.db3',
+  url: publicUrl,
   bytes: st.size,
   height,
   journalMode,
@@ -84,7 +92,9 @@ const manifest = {
   publishedAt: new Date().toISOString(),
   note:
     'Checkpointed DELETE-mode mainnet chain for browser WASM fast-start. '
-    + 'Served same-origin under /snapshot/ (COEP-safe).',
+    + (publicUrl.startsWith('http')
+      ? `Hosted at ${publicUrl} (needs CORP: cross-origin under COEP).`
+      : 'Served same-origin under /snapshot/ (COEP-safe local/dev).'),
 };
 
 fs.writeFileSync(destManifest, `${JSON.stringify(manifest, null, 2)}\n`);
