@@ -38,3 +38,11 @@
     Cross-Origin-Resource-Policy = "same-origin"
     Cross-Origin-Opener-Policy = "same-origin"
     Cross-Origin-Embedder-Policy = "require-corp"
+
+[[headers]]
+  for = "/snapshot/*"
+  [headers.values]
+    Cross-Origin-Resource-Policy = "same-origin"
+    Cross-Origin-Opener-Policy = "same-origin"
+    Cross-Origin-Embedder-Policy = "require-corp"
+    Cache-Control = "public, max-age=3600"

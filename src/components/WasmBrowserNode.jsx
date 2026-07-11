@@ -7,6 +7,7 @@ import {
   hasSharedArrayBuffer,
   isCrossOriginIsolated,
   isOpfsReadonlyError,
+  isWasmOomError,
   listOpfsEntries,
   markOpfsNeedsReset,
   opfsNeedsReset,
@@ -20,15 +21,32 @@ import {
   OFFICIAL1,
   localDevWsBridgeUrl,
   isLocalDevHost,
+  parsePeerList,
+  formatPeerList,
+  mainnetPeerPreset,
   probeBridgeHttp,
   probeBridgeWs,
   resolveDefaultWsPeers,
 } from '../lib/bridge.js';
+import {
+  formatBytes,
+  getLocalChainDbInfo,
+  importChainDbBlob,
+  importChainDbFromUrl,
+  isSqliteDiskIoError,
+} from '../lib/opfsSnapshot.js';
+import {
+  fetchPublicSnapshotManifest,
+  publicSnapshotLabel,
+  resolvePublicSnapshotUrl,
+} from '../lib/snapshotPublic.js';
 import { formatHashrate, shortAddr } from '../lib/presets.js';
 import './NodeDashboard.css';
 
 const MAX_LOG = 400;
 const MAX_ROWS = 50;
+/** Rolling window for blocks/s estimate. */
+const SYNC_SAMPLE_MS = 60_000;
 
 export default function WasmBrowserNode() {
   const [isolated, setIsolated] = useState(false);
@@ -44,6 +62,8 @@ export default function WasmBrowserNode() {
   const [stopping, setStopping] = useState(false);
   /** True when SQLite/OPFS failed mid-run — node is not healthy even if workers still exist. */
   const [storageFatal, setStorageFatal] = useState(false);
+  /** True when WASM heap hit MAXIMUM_MEMORY (Cannot enlarge memory). */
+  const [memoryFatal, setMemoryFatal] = useState(false);
   const [clearingOpfs, setClearingOpfs] = useState(false);
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState(null);
@@ -58,11 +78,26 @@ export default function WasmBrowserNode() {
   const [mempoolCount, setMempoolCount] = useState(0);
   const [mempool, setMempool] = useState([]);
   const [logLines, setLogLines] = useState([]);
+  /** { blocksPerSec, etaSec, lag } derived from height samples vs network tip. */
+  const [syncStats, setSyncStats] = useState(null);
+  const [tabHidden, setTabHidden] = useState(false);
+  const [snapshotBusy, setSnapshotBusy] = useState(false);
+  const [snapshotUrl, setSnapshotUrl] = useState('');
+  const [localDbInfo, setLocalDbInfo] = useState(null);
+  /** Manifest for same-origin / public community snapshot (optional). */
+  const [publicSnapshot, setPublicSnapshot] = useState(null);
+  const snapshotFileRef = useRef(null);
 
   const startedRef = useRef(false);
   /** Sync flag for OPFS fatal during boot (state updates are async). */
   const storageFatalRef = useRef(false);
+  /** Sync flag for WASM OOM during printErr (state updates are async). */
+  const memoryFatalRef = useRef(false);
   const consoleRef = useRef(null);
+  /** Height samples: { t, h }[] for rate estimation. */
+  const heightSamplesRef = useRef([]);
+  /** Latest network tip from HTTP probe (for ETA). */
+  const netHeightRef = useRef(null);
 
   const appendLog = useCallback((text) => {
     setLogLines((prev) => {
@@ -227,6 +262,20 @@ export default function WasmBrowserNode() {
       if (!cancelled) {
         runBridgeProbes(peers);
       }
+
+      // Public snapshot catalog (small JSON; .db3 is optional / large).
+      try {
+        const man = await fetchPublicSnapshotManifest();
+        if (!cancelled && man) {
+          setPublicSnapshot(man);
+          if (man.url && !snapshotUrl) {
+            // Prefer manifest URL when present (may be absolute CDN later).
+            setSnapshotUrl(man.url);
+          }
+        }
+      } catch {
+        // ignore
+      }
     })();
 
     return () => {
@@ -234,18 +283,63 @@ export default function WasmBrowserNode() {
     };
   }, [runBridgeProbes, appendLog]);
 
+  // Stick to bottom only if the user is already near the bottom.
+  // Scrolling up to read history should not jump back on every new line.
   useEffect(() => {
-    if (consoleRef.current) {
-      consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
+    const el = consoleRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const stickThresholdPx = 64;
+    if (distanceFromBottom <= stickThresholdPx) {
+      // rAF: controlled textarea value update can reset scroll before layout.
+      requestAnimationFrame(() => {
+        if (consoleRef.current) {
+          consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
+        }
+      });
     }
   }, [logLines]);
 
-  /** Healthy run only — storage fatal unblocks Clear OPFS / Recover even if workers linger. */
-  const nodeHealthy = running && !storageFatal;
+  // Warn when the tab is backgrounded — Chromium throttles workers hard.
+  useEffect(() => {
+    const onVis = () => {
+      const hidden = document.visibilityState === 'hidden';
+      setTabHidden(hidden);
+      if (hidden && startedRef.current) {
+        appendLog('[sync] Tab hidden — browser may throttle the node. Keep this tab focused for faster IBD.');
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [appendLog]);
+
+  // Refresh local chain.db3 size (after import / clear).
+  const refreshLocalDbInfo = useCallback(async () => {
+    const info = await getLocalChainDbInfo();
+    setLocalDbInfo(info);
+    return info;
+  }, []);
+
+  useEffect(() => {
+    refreshLocalDbInfo();
+  }, [refreshLocalDbInfo]);
+
+  /** Healthy run only — storage/memory fatal means not healthy even if workers linger. */
+  const nodeHealthy = running && !storageFatal && !memoryFatal;
+
+  const configuredPeerCount = useMemo(
+    () => parsePeerList(wsPeers).length,
+    [wsPeers],
+  );
 
   const canStart = useMemo(
-    () => isolated && sab && !running && !starting && !stopping && !storageFatal && !clearingOpfs,
-    [isolated, sab, running, starting, stopping, storageFatal, clearingOpfs],
+    () => isolated && sab && !running && !starting && !stopping && !storageFatal && !clearingOpfs && !snapshotBusy,
+    [isolated, sab, running, starting, stopping, storageFatal, clearingOpfs, snapshotBusy],
+  );
+
+  const canImportPublicSnapshot = useMemo(
+    () => opfsOk && !running && !starting && !stopping && !snapshotBusy && !clearingOpfs,
+    [opfsOk, running, starting, stopping, snapshotBusy, clearingOpfs],
   );
 
   /** Stop only while a node is (or was) running — not mid-start or mid-recover. */
@@ -282,28 +376,90 @@ export default function WasmBrowserNode() {
     );
   }, [appendLog]);
 
+  /** WASM linear memory hit MAXIMUM_MEMORY — sync cannot continue in this runtime. */
+  const handleWasmOom = useCallback((sourceText) => {
+    if (memoryFatalRef.current) return;
+    memoryFatalRef.current = true;
+    setMemoryFatal(true);
+    setRunning(false);
+    startedRef.current = false;
+    try {
+      terminateWasmWorkers(appendLog);
+    } catch {
+      // ignore
+    }
+    const snippet = sourceText ? String(sourceText).slice(0, 200) : '';
+    setError(
+      'WASM heap exhausted (Cannot enlarge memory). The full-chain sync needs more '
+      + 'browser RAM than this node build allows. OPFS data is usually still intact — '
+      + 'Stop is not required; after a rebuild with a higher MAXIMUM_MEMORY you can Start '
+      + 'again to resume. Restarting the same build will hit the same wall.',
+    );
+    setStatus('WASM out of memory — heap limit reached');
+    appendLog(`[memory] WASM OOM / Cannot enlarge memory${snippet ? `: ${snippet}` : ''}`);
+    appendLog(
+      '[memory] Fix: rebuild public/node triad with -sMAXIMUM_MEMORY=2048mb (or higher). '
+      + 'Clear/Recover only if you want a full resync after upgrading.',
+    );
+  }, [appendLog]);
+
+  /**
+   * SQLite "disk I/O error" on OPFS — usually WAL/hot copy, OPFS lock, or
+   * incomplete multi‑GB write. (emsdk 3.1.74+ has i64 OPFS offsets — not a 2 GiB wall.)
+   */
+  const handleSqliteDiskIo = useCallback((sourceText) => {
+    setRunning(false);
+    startedRef.current = false;
+    try {
+      terminateWasmWorkers(appendLog);
+    } catch {
+      // ignore
+    }
+    const snippet = sourceText ? String(sourceText).slice(0, 180) : '';
+    setError(
+      'SQLite disk I/O error opening chain.db3. Common causes: WAL/hot copy import, '
+      + 'another tab holding OPFS, or a bad multi‑GB write. '
+      + 'Close every other tab on this origin → Clear local data → re-import a checkpointed '
+      + 'DELETE-mode chain.db3 → Start once.',
+    );
+    setStatus('OPFS SQLite open failed — see console');
+    appendLog(`[storage] SQLite disk I/O / open failure${snippet ? `: ${snippet}` : ''}`);
+    appendLog(
+      '[storage] Prefer: close ALL tabs for this origin → Clear local data → re-import '
+      + 'chain.db3 (journal_mode=DELETE, no -wal/-shm) → Start once.',
+    );
+    appendLog(
+      '[storage] If never checkpointed on native: stop node → '
+      + 'sqlite3 chain.db3 "PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;" '
+      + '→ import only that file.',
+    );
+  }, [appendLog]);
+
   const applyPeers = () => {
-    const v = peersInput.trim() || DEFAULT_WS_PEERS;
+    const v = formatPeerList(peersInput.trim() || DEFAULT_WS_PEERS);
+    setPeersInput(v);
     setWsPeers(v);
     try {
       localStorage.setItem('wsPeers', v);
     } catch {
       // ignore
     }
-    appendLog(`Bridge peers set → ${v}`);
+    const n = parsePeerList(v).length;
+    appendLog(`Bridge peers set → ${n} URL${n === 1 ? '' : 's'}: ${v}`);
     runBridgeProbes(v);
   };
 
   const useOfficial1 = () => {
-    setPeersInput(OFFICIAL1.wsBridge);
-    setWsPeers(OFFICIAL1.wsBridge);
+    const v = mainnetPeerPreset();
+    setPeersInput(v);
+    setWsPeers(v);
     try {
-      localStorage.setItem('wsPeers', OFFICIAL1.wsBridge);
+      localStorage.setItem('wsPeers', v);
     } catch {
       // ignore
     }
-    appendLog(`Reset to public Official1 → ${OFFICIAL1.wsBridge}`);
-    runBridgeProbes(OFFICIAL1.wsBridge);
+    appendLog(`Reset to mainnet bridge preset → ${v}`);
+    runBridgeProbes(v);
   };
 
   /** Local Vite proxy — browser only opens ws://this-host/ws-bridge (Node dials Official1). */
@@ -338,13 +494,47 @@ export default function WasmBrowserNode() {
     }
   };
 
+  // Keep network tip ref fresh for sync ETA without re-binding WASM callbacks.
+  useEffect(() => {
+    if (bridgeHttp?.height != null) {
+      netHeightRef.current = Number(bridgeHttp.height);
+    }
+  }, [bridgeHttp?.height]);
+
   const onChain = useCallback((event) => {
     if (!event) return;
+    const height = Number(event.length ?? event.height ?? 0) || 0;
     setChain({
-      height: event.length ?? event.height ?? 0,
+      height,
       difficulty: event.difficulty,
       worksum: event.worksum,
     });
+
+    const now = Date.now();
+    const samples = heightSamplesRef.current;
+    samples.push({ t: now, h: height });
+    while (samples.length > 2 && now - samples[0].t > SYNC_SAMPLE_MS) {
+      samples.shift();
+    }
+    if (samples.length >= 2) {
+      const first = samples[0];
+      const last = samples[samples.length - 1];
+      const dt = (last.t - first.t) / 1000;
+      const dh = last.h - first.h;
+      if (dt > 0.5 && dh >= 0) {
+        const blocksPerSec = dh / dt;
+        const netH = netHeightRef.current;
+        const lag = netH != null && Number.isFinite(netH) ? Math.max(0, netH - height) : null;
+        const etaSec = lag != null && blocksPerSec > 0.01 ? lag / blocksPerSec : null;
+        setSyncStats({
+          blocksPerSec,
+          lag,
+          etaSec,
+          netHeight: netH ?? null,
+          localHeight: height,
+        });
+      }
+    }
   }, []);
 
   const onConnect = useCallback((event) => {
@@ -467,8 +657,12 @@ export default function WasmBrowserNode() {
     }
     startedRef.current = false;
     setRunning(false);
+    memoryFatalRef.current = false;
+    setMemoryFatal(false);
     setProgress(null);
     setChain(null);
+    setSyncStats(null);
+    heightSamplesRef.current = [];
     setPeerCount(0);
     setPeers([]);
     setMempoolCount(0);
@@ -478,6 +672,75 @@ export default function WasmBrowserNode() {
     setStatus('Stopped — click Start to run again');
     appendLog('Node stopped. OPFS unchanged. You can Start again (wait a few seconds if reconnect fails).');
     setStopping(false);
+    refreshLocalDbInfo();
+  };
+
+  const importSnapshotFile = async (file) => {
+    if (!file || running || starting || stopping || snapshotBusy) return;
+    setSnapshotBusy(true);
+    setError(null);
+    appendLog(`[snapshot] importing file “${file.name}” (${formatBytes(file.size)})…`);
+    try {
+      const result = await importChainDbBlob(file, { log: appendLog });
+      if (!result.ok) {
+        setError(result.error || 'Snapshot import failed');
+        appendLog(`[snapshot] FAIL — ${result.error}`);
+      } else {
+        appendLog(
+          `[snapshot] OK — ${formatBytes(result.bytes)}. Press Start to catch up remaining tip blocks.`,
+        );
+        await refreshLocalDbInfo();
+      }
+    } catch (err) {
+      setError(err?.message || String(err));
+      appendLog(`[snapshot] ERROR — ${err?.message || err}`);
+    } finally {
+      setSnapshotBusy(false);
+      if (snapshotFileRef.current) snapshotFileRef.current.value = '';
+    }
+  };
+
+  const importSnapshotUrl = async (urlOverride) => {
+    if (running || starting || stopping || snapshotBusy) return;
+    const url = String(urlOverride || snapshotUrl || resolvePublicSnapshotUrl()).trim();
+    if (!url) {
+      setError('Enter a snapshot URL (must be fetchable under COEP / same-origin).');
+      return;
+    }
+    setSnapshotBusy(true);
+    setError(null);
+    appendLog(`[snapshot] downloading ${url}…`);
+    try {
+      const result = await importChainDbFromUrl(url, { log: appendLog });
+      if (!result.ok) {
+        setError(result.error || 'Snapshot URL import failed');
+        appendLog(`[snapshot] FAIL — ${result.error}`);
+        if (url.startsWith('/snapshot/')) {
+          appendLog(
+            '[snapshot] tip: same-origin file missing? Run `npm run snapshot:link` '
+            + '(links ~/Downloads/chain.db3 into public/snapshot/) and restart dev.',
+          );
+        }
+      } else {
+        appendLog(
+          `[snapshot] OK — ${formatBytes(result.bytes)}. Press Start to catch up remaining tip blocks.`,
+        );
+        await refreshLocalDbInfo();
+      }
+    } catch (err) {
+      setError(err?.message || String(err));
+      appendLog(`[snapshot] ERROR — ${err?.message || err}`);
+    } finally {
+      setSnapshotBusy(false);
+    }
+  };
+
+  /** One-click community / site-hosted snapshot (default /snapshot/chain.db3). */
+  const importPublicSnapshot = async () => {
+    const url = publicSnapshot?.url || resolvePublicSnapshotUrl();
+    setSnapshotUrl(url);
+    appendLog(`[snapshot] importing ${publicSnapshotLabel(publicSnapshot)}…`);
+    await importSnapshotUrl(url);
   };
 
   const start = async () => {
@@ -486,11 +749,23 @@ export default function WasmBrowserNode() {
     setError(null);
     storageFatalRef.current = false;
     setStorageFatal(false);
+    memoryFatalRef.current = false;
+    setMemoryFatal(false);
+    setSyncStats(null);
+    heightSamplesRef.current = [];
     setStatus('Loading WASM full node…');
     appendLog('Starting Warthog WASM full node…');
     appendLog(
       `crossOriginIsolated=${isCrossOriginIsolated()} SharedArrayBuffer=${hasSharedArrayBuffer()} OPFS=${hasOpfs()}`,
     );
+    appendLog(
+      `Sync profile: ${configuredPeerCount} WS peer URL(s) · WebRTC on · keep this tab focused`,
+    );
+    if (localDbInfo?.present) {
+      appendLog(
+        `Local ${localDbInfo.name || 'chain.db3'} present (${formatBytes(localDbInfo.bytes)}) — will resume / catch up`,
+      );
+    }
     if (opfsNeedsReset()) {
       appendLog('Prior OPFS failure flagged — clearing storage before boot…');
     }
@@ -534,6 +809,10 @@ export default function WasmBrowserNode() {
           // WASM throws inside the worker — surface recovery when SQLite fails
           if (isOpfsReadonlyError(text)) {
             handleOpfsReadonly(text);
+          } else if (isWasmOomError(text)) {
+            handleWasmOom(text);
+          } else if (isSqliteDiskIoError(text)) {
+            handleSqliteDiskIo(text);
           }
         },
         setStatus,
@@ -556,6 +835,11 @@ export default function WasmBrowserNode() {
         setStatus('OPFS / SQLite write failed — use Recover');
         setRunning(false);
         startedRef.current = false;
+      } else if (memoryFatalRef.current) {
+        appendLog('Runtime returned but WASM heap is exhausted — do not trust peer/chain state');
+        setStatus('WASM out of memory — heap limit reached');
+        setRunning(false);
+        startedRef.current = false;
       } else {
         startedRef.current = true;
         setRunning(true);
@@ -569,6 +853,10 @@ export default function WasmBrowserNode() {
       const msg = err.message || String(err);
       if (isOpfsReadonlyError(err)) {
         handleOpfsReadonly(msg);
+      } else if (isWasmOomError(err)) {
+        handleWasmOom(msg);
+      } else if (isSqliteDiskIoError(err)) {
+        handleSqliteDiskIo(msg);
       } else {
         setError(msg);
         setStatus('Failed to start');
@@ -582,7 +870,7 @@ export default function WasmBrowserNode() {
   };
 
   const browserReady = isolated && sab && opfsOk;
-  const badgeClass = storageFatal
+  const badgeClass = storageFatal || memoryFatal
     ? 'is-bad'
     : nodeHealthy
       ? 'is-ok'
@@ -591,15 +879,20 @@ export default function WasmBrowserNode() {
         : 'is-warn';
   const badgeLabel = storageFatal
     ? 'Needs fix'
-    : nodeHealthy
-      ? 'Running'
-      : browserReady
-        ? 'Ready'
-        : 'Setup needed';
+    : memoryFatal
+      ? 'Out of memory'
+      : nodeHealthy
+        ? 'Running'
+        : browserReady
+          ? 'Ready'
+          : 'Setup needed';
 
   const friendlyStatus = (() => {
     if (storageFatal) {
       return 'Storage is locked. Close other tabs on this site, then use Recover below.';
+    }
+    if (memoryFatal) {
+      return 'WASM ran out of memory during sync (heap limit). Local chain data is usually kept — Start again after upgrading the node build, or try Start once more if you already have the 2048 MB build.';
     }
     if (stopping) return 'Stopping your node…';
     if (nodeHealthy) {
@@ -631,6 +924,21 @@ export default function WasmBrowserNode() {
   const displayPeerCount = peerCount || peers.length;
   const displayMempoolCount = mempoolCount || mempool.length;
 
+  const formatEta = (sec) => {
+    if (sec == null || !Number.isFinite(sec) || sec < 0) return '—';
+    if (sec < 90) return `~${Math.round(sec)}s`;
+    if (sec < 3600) return `~${Math.round(sec / 60)}m`;
+    const h = Math.floor(sec / 3600);
+    const m = Math.round((sec % 3600) / 60);
+    return `~${h}h ${m}m`;
+  };
+
+  const syncRateLabel = syncStats?.blocksPerSec != null
+    ? `${syncStats.blocksPerSec < 10
+      ? syncStats.blocksPerSec.toFixed(1)
+      : Math.round(syncStats.blocksPerSec)} blk/s`
+    : null;
+
   return (
     <div className="dash">
       <header className="dash__header">
@@ -661,9 +969,11 @@ export default function WasmBrowserNode() {
                 ? 'Please wait…'
                 : storageFatal
                   ? 'Fix storage first'
-                  : nodeHealthy
-                    ? 'Node is running'
-                    : 'Start node'}
+                  : memoryFatal
+                    ? 'Memory limit hit — Start to retry'
+                    : nodeHealthy
+                      ? 'Node is running'
+                      : 'Start node'}
           </button>
           {(running || stopping) && (
             <button
@@ -676,6 +986,25 @@ export default function WasmBrowserNode() {
               {stopping ? 'Stopping…' : 'Stop node'}
             </button>
           )}
+          {!nodeHealthy && !localDbInfo?.present && (
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={importPublicSnapshot}
+              disabled={!canImportPublicSnapshot}
+              title={
+                publicSnapshot
+                  ? `Import site chain.db3 (${formatBytes(publicSnapshot.bytes || 0)}`
+                    + (publicSnapshot.height != null
+                      ? `, height ${Number(publicSnapshot.height).toLocaleString()}`
+                      : '')
+                    + ')'
+                  : 'Import site-hosted chain.db3 into this browser'
+              }
+            >
+              {snapshotBusy ? 'Importing snapshot…' : 'Import snapshot'}
+            </button>
+          )}
         </div>
         {progress && (
           <progress
@@ -684,12 +1013,33 @@ export default function WasmBrowserNode() {
             max={progress.max}
           />
         )}
-        {!nodeHealthy && !storageFatal && !stopping && browserReady && (
+        {!nodeHealthy && !storageFatal && !memoryFatal && !stopping && browserReady && (
           <p className="hero__hint">
-            Keep this tab open. Only one tab per site can run the node at a time.
+            Keep this tab focused for faster sync. Only one tab per site can run the node.
           </p>
         )}
-        {error && <div className="dash__error" style={{ marginTop: '0.85rem', textAlign: 'left' }}>{error}</div>}
+        {tabHidden && nodeHealthy && (
+          <div className="dash__error" style={{ marginTop: '0.85rem', textAlign: 'left' }}>
+            <strong>Tab in background</strong> — Chrome may throttle the WASM node.
+            Switch back to this tab to keep IBD moving.
+          </div>
+        )}
+        {error && !memoryFatal && (
+          <div className="dash__error" style={{ marginTop: '0.85rem', textAlign: 'left' }}>{error}</div>
+        )}
+        {memoryFatal && (
+          <div className="dash__error" style={{ marginTop: '0.85rem', textAlign: 'left' }}>
+            <strong>Out of memory</strong> — the WASM node hit its heap limit (
+            <code>Cannot enlarge memory</code>
+            ). Full-chain sync around mid/late IBD needs more than older 768 MB builds allowed.
+            <ol className="dash__checklist">
+              <li>This build should use <strong>2048 MB</strong> max heap — hard-refresh after deploy.</li>
+              <li>Local OPFS chain data is usually kept; you do <strong>not</strong> need Recover just for OOM.</li>
+              <li>Press <strong>Start</strong> again to resume (if height still stalls at the same point, the triad was not upgraded).</li>
+              <li>Use a 64-bit desktop Chrome/Edge with enough free RAM; close heavy tabs if needed.</li>
+            </ol>
+          </div>
+        )}
         {storageFatal && (
           <div className="dash__error" style={{ marginTop: '0.85rem', textAlign: 'left' }}>
             <strong>Storage locked</strong> — another tab may still be using this site&apos;s data.
@@ -720,15 +1070,36 @@ export default function WasmBrowserNode() {
           <span className="snapshot__value">
             {chain?.height != null ? `#${chain.height}` : '—'}
           </span>
-          {chain?.difficulty != null && (
+          {bridgeHttp?.height != null && (
+            <span className="snapshot__sub">
+              network #{bridgeHttp.height}
+              {syncStats?.lag != null ? ` · lag ${syncStats.lag.toLocaleString()}` : ''}
+            </span>
+          )}
+          {chain?.difficulty != null && !bridgeHttp?.height && (
             <span className="snapshot__sub">{formatHashrate(chain.difficulty)}</span>
           )}
+        </div>
+        <div className="snapshot__card">
+          <span className="snapshot__label">Sync rate</span>
+          <span className="snapshot__value">
+            {nodeHealthy && syncRateLabel ? syncRateLabel : '—'}
+          </span>
+          <span className="snapshot__sub">
+            {nodeHealthy && syncStats?.etaSec != null
+              ? `ETA ${formatEta(syncStats.etaSec)}`
+              : nodeHealthy
+                ? 'measuring…'
+                : 'after start'}
+          </span>
         </div>
         <div className="snapshot__card">
           <span className="snapshot__label">Connections</span>
           <span className="snapshot__value">{nodeHealthy || peers.length ? displayPeerCount : '—'}</span>
           <span className="snapshot__sub">
-            {nodeHealthy ? (displayPeerCount === 1 ? 'peer' : 'peers') : 'after start'}
+            {nodeHealthy
+              ? `${displayPeerCount === 1 ? 'peer' : 'peers'} · ${configuredPeerCount} WS URL${configuredPeerCount === 1 ? '' : 's'}`
+              : 'after start'}
           </span>
         </div>
         <div className="snapshot__card">
@@ -873,7 +1244,10 @@ export default function WasmBrowserNode() {
                   {bridgeWs.state === 'idle' && '—'}
                 </span>
               </div>
-              <div className="status-card">
+              <div
+                className="status-card"
+                title="Official1 dashboard WebSocket only — not used by this full node. See docs/TRANSACTIONS.md"
+              >
                 <span className="label">RPC stream</span>
                 <span>
                   {bridgeStream.state === 'ok' && `Open · ${bridgeStream.openedMs ?? '?'}ms`}
@@ -910,15 +1284,19 @@ export default function WasmBrowserNode() {
           )}
 
           <div className="advanced__section">
-            <h3>Peer endpoint</h3>
+            <h3>Peer endpoints (multi-peer)</h3>
+            <p className="muted small" style={{ margin: '0 0 0.5rem' }}>
+              Semicolon-separated <code>wss://…/ws</code> URLs. More bridges = more parallel
+              block batches. WebRTC is enabled so Official1 can also introduce extra peers after connect.
+            </p>
             <div className="controls__custom">
               <input
                 type="text"
                 value={peersInput}
                 onChange={(e) => setPeersInput(e.target.value)}
                 disabled={running || starting}
-                placeholder={OFFICIAL1.wsBridge}
-                aria-label="WebSocket peer URL"
+                placeholder={`${OFFICIAL1.wsBridge};wss://other-bridge/ws`}
+                aria-label="WebSocket peer URLs"
               />
               <div className="controls__actions">
                 <button type="button" className="btn" onClick={applyPeers} disabled={running || starting}>
@@ -935,8 +1313,77 @@ export default function WasmBrowserNode() {
               </div>
             </div>
             <div className="controls__meta" style={{ marginTop: '0.5rem' }}>
-              <span className="mono muted small" title={wsPeers}>WS_PEERS={wsPeers}</span>
+              <span className="mono muted small" title={wsPeers}>
+                WS_PEERS ({configuredPeerCount})={wsPeers}
+              </span>
             </div>
+          </div>
+
+          <div className="advanced__section">
+            <h3>Chain snapshot</h3>
+            <p className="muted small" style={{ margin: '0 0 0.65rem' }}>
+              Skip most of genesis→tip, then Start to catch up.
+              Local:{' '}
+              {localDbInfo?.present
+                ? <strong>{formatBytes(localDbInfo.bytes)}</strong>
+                : <em>none</em>}
+              {publicSnapshot?.height != null && (
+                <>
+                  {' · '}Site offer:{' '}
+                  <strong>h{Number(publicSnapshot.height).toLocaleString()}</strong>
+                  {' '}({formatBytes(publicSnapshot.bytes || 0)})
+                </>
+              )}
+            </p>
+            <div className="controls__actions" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
+              <button
+                type="button"
+                className="btn"
+                onClick={importPublicSnapshot}
+                disabled={!canImportPublicSnapshot}
+              >
+                {snapshotBusy ? 'Importing…' : 'Import site snapshot'}
+              </button>
+              <label className="btn btn--ghost" style={{ cursor: canImportPublicSnapshot ? 'pointer' : 'not-allowed' }}>
+                Choose file…
+                <input
+                  ref={snapshotFileRef}
+                  type="file"
+                  accept=".db3,application/octet-stream"
+                  disabled={!canImportPublicSnapshot}
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) importSnapshotFile(f);
+                  }}
+                  aria-label="Import chain.db3 file"
+                />
+              </label>
+            </div>
+            <div className="controls__custom" style={{ marginTop: '0.65rem' }}>
+              <input
+                type="url"
+                value={snapshotUrl}
+                onChange={(e) => setSnapshotUrl(e.target.value)}
+                disabled={running || starting || stopping || snapshotBusy}
+                placeholder="Or paste URL…"
+                aria-label="Snapshot URL"
+              />
+              <div className="controls__actions">
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  onClick={() => importSnapshotUrl()}
+                  disabled={!canImportPublicSnapshot || !snapshotUrl.trim()}
+                >
+                  Import URL
+                </button>
+              </div>
+            </div>
+            <p className="muted small" style={{ margin: '0.5rem 0 0' }}>
+              Own file must be checkpointed DELETE-mode <code>chain.db3</code> only (no <code>-wal</code>).
+              Refresh site file: <code>npm run snapshot:link</code>.
+            </p>
           </div>
 
           <div className="advanced__section">

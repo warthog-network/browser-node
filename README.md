@@ -4,11 +4,11 @@ Run a real **Warthog full node in the browser** (Emscripten WASM + pthreads + OP
 
 | Piece | Location |
 |--------|----------|
-| WASM triad | `public/node/wart-node.{js,wasm,worker.js}` (**v0.9.6**, matches Official1) |
+| WASM triad | `public/node/wart-node.{js,wasm,worker.js}` (**v0.9.6 patched**, matches Official1) |
 | UI | `src/components/WasmBrowserNode.jsx` |
 | Boot + WS glue | `src/lib/wasmNode.js` |
 | Official1 defaults | `src/lib/bridge.js` → `wss://warthognode.duckdns.org/ws` |
-| Rebuild notes | `public/node/BUILD_INFO.md` |
+| Core / rebuild notes | [`public/node/BUILD_INFO.md`](public/node/BUILD_INFO.md) |
 
 ## Requirements
 
@@ -106,10 +106,69 @@ commit; do not use a static-only publish that drops SSR.
 
 ## Known behavior
 
-- OPFS stores chain DBs in the browser; **one tab** per origin.
+- OPFS stores chain DBs in the browser; **one tab** per origin. Keep the tab **focused** during IBD (background tabs get throttled).
+- **Stop** kills workers in this tab and leaves OPFS intact; **Start** again after a short settle (Official1 may need ~30s between connects).
+- **Faster sync:** multi-peer `WS_PEERS` (`;`-separated), WebRTC on by default, larger download window; optional **public chain.db3 snapshot** (hero / Advanced) to skip most of genesis→tip.
+- **Transactions / virtual RPC** (not a website-wallet node URL): see **[`docs/TRANSACTIONS.md`](docs/TRANSACTIONS.md)**.
+
+### Public chain snapshot (optional)
+
+Serve a prepared mainnet `chain.db3` at same-origin `/snapshot/chain.db3` (COEP-safe):
+
+```bash
+# links ~/Downloads/chain.db3 → public/snapshot/chain.db3 + refreshes manifest.json
+npm run snapshot:link
+# or: npm run snapshot:link -- /path/to/chain.db3
+```
+
+- `public/snapshot/manifest.json` is committed (height / size metadata).
+- `public/snapshot/chain.db3` is **gitignored** (multi‑GB — do not force-add or Netlify-deploy).
+- UI: **Import public snapshot** when no local DB is present.
+- Override URL: `PUBLIC_SNAPSHOT_URL=https://…` or `?snapshot=/path-or-url`.
 - Official1 may rate-limit ~1 `/ws` connect per public IP (~30s); failed GRUNT can ban longer.
-- If GRUNT succeeds then socket closes after first Init (`tx 61B` → `1006`), that is a **post-handshake** issue (not “can’t connect”).
+- If GRUNT succeeds then socket closes after first Init (`tx 61B` → `1006`), that is a **post-handshake** issue (not “can’t connect”) — see InitMsgV3 notes below.
+
+## Core WASM: not stock 0.9.6
+
+The files under `public/node/` are a **full node** compiled from Warthog core
+**v0.9.6 (`0eaafc39`) plus local patches**. Do not assume a clean 0.9.6 tag
+export will work against Official1.
+
+Full detail: **[`public/node/BUILD_INFO.md`](public/node/BUILD_INFO.md)**.
+
+### What to remember
+
+```text
+Browser node WASM = v0.9.6 (0eaafc39)
+  + InitMsgV3 type 30 send
+  + Init type-0-as-V3 recv compat
+  + Emscripten filelock skip
+  + MAXIMUM_MEMORY=2048mb (full IBD stage-apply heap)
+  + small browser/build fixes
+App (this repo) = COOP/COEP + WS glue v4 + OPFS lifecycle + Official1 bridge care
+  + UI detects "Cannot enlarge memory" (Out of memory badge)
+```
+
+| Area | Notes |
+|------|--------|
+| **Must-have protocol fix** | Stock 0.9.6 sent Init **V3 body** with type **0** (V1). Official1 can fail integrity / reject → WS **1006** after GRUNT. Patched send uses type **30**; recv accepts mis-tagged V3 for buggy peers. Same idea as later core `58031328`. |
+| **Browser/build patches** | Skip Unix flock under Emscripten (OPFS); null-safe `WS_PEERS`; **`-sMAXIMUM_MEMORY=2048mb`** (768 MB OOM’d ~¾ IBD in `add_stage`); emsdk 3.1.60 Docker/meson export of the triad. |
+| **Wire version** | GRUNT must advertise **0.9.6** (`0x00000906`) to match Official1. |
+| **Not core (this app)** | Isolation headers; JS WS glue **v4** (delay onopen; C++ does GRUNT — no dual handshake in JS); OPFS one-tab / Recover / Stop; bridge rate-limit care; WASM OOM detection. |
+| **Rebuild** | Only from the patched tree (or core that already has InitMsgV3 + Emscripten filelock). Keep ≥2048 MB max heap. Update `BUILD_INFO.md` when commit/date changes. |
+| **Backups** | `public/node/backup-v0.7.58/`, `backup-v0.9.15/` — older; not the default triad. |
+
+### Symptom → cause (quick)
+
+| Symptom | Likely cause |
+|---------|----------------|
+| Isolation false / SAB missing | COOP/COEP headers not on HTML |
+| GRUNT never completes | Bridge down, rate-limit, ban, wrong `WS_PEERS` |
+| GRUNT OK then close after ~61B Init | Stock 0.9.6 InitMsgV3 type bug — need patched WASM |
+| `Cannot enlarge memory` / crash ~¾ sync | Old 768 MB heap triad — need 2048 MB build |
+| `readonly database` / OPFS locked | Another tab or stale workers — Stop / Recover / Clear |
+| Start fails right after Stop | Official1 connect slot (~30s) — wait and retry |
 
 ## License / assets
 
-WASM binary is built from Warthog core; ship only what your project license allows.
+WASM binary is built from Warthog core (patched 0.9.6 as above); ship only what your project license allows.

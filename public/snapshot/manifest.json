@@ -1,0 +1,11 @@
+{
+  "name": "chain.db3",
+  "url": "/snapshot/chain.db3",
+  "bytes": 3485917184,
+  "height": 4764332,
+  "journalMode": "delete",
+  "network": "mainnet",
+  "preparedAt": "2026-07-11T22:23:23Z",
+  "publishedAt": "2026-07-11T22:56:23Z",
+  "note": "Checkpointed DELETE-mode mainnet chain for browser WASM fast-start. Same-origin path works under COEP."
+}

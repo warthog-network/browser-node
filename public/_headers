@@ -17,3 +17,14 @@
   Cross-Origin-Resource-Policy: same-origin
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
+
+/snapshot/*
+  Cross-Origin-Resource-Policy: same-origin
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cache-Control: public, max-age=3600
+
+/snapshot/chain.db3
+  Content-Type: application/octet-stream
+  Cross-Origin-Resource-Policy: same-origin
+  Accept-Ranges: bytes

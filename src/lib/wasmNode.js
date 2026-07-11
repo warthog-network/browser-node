@@ -298,6 +298,20 @@ export function isOpfsReadonlyError(err) {
   return /readonly database|NoModificationAllowed|InvalidStateError|SQLITE_READONLY|write a readonly/i.test(msg);
 }
 
+/**
+ * True when Emscripten failed to grow the WASM heap (MAXIMUM_MEMORY cap).
+ * Typical printErr: "Cannot enlarge memory, requested N bytes, but the limit is M bytes!"
+ * Older 768mb builds died around ~¾ IBD inside ChainServer::add_stage.
+ */
+export function isWasmOomError(err) {
+  const msg = String(err?.message || err || '');
+  return /Cannot enlarge memory/i.test(msg)
+    || /Aborted\([^)]*Cannot enlarge/i.test(msg)
+    || /out of memory/i.test(msg)
+    || /memory access out of bounds/i.test(msg)
+    || /limit is\s+\d+\s+bytes!/i.test(msg);
+}
+
 /** Resolve bridge peer list: ?peers= wins, else localStorage, else env-aware default. */
 export function resolveWsPeers(search = typeof window !== 'undefined' ? window.location.search : '') {
   try {
@@ -377,9 +391,17 @@ export function createModuleConfig({
   const statusState = { time: Date.now(), text: '' };
   let depTotal = 0;
 
+  const peerCount = String(peers).split(/[;]+/).map((s) => s.trim()).filter(Boolean).length;
+
   const config = {
     /** Used by startWasmNode installLocalBridgeWsRewrite. */
     __wsPeers: peers,
+
+    /**
+     * Passed to C main as argv. Browser core also enables WebRTC by default;
+     * this keeps the flag explicit if config.cpp path changes.
+     */
+    arguments: ['--enable-webrtc'],
 
     locateFile(path) {
       if (path.endsWith('.wasm') || path.endsWith('.worker.js') || path.endsWith('.worker.mjs') || path.endsWith('.js')) {
@@ -395,7 +417,8 @@ export function createModuleConfig({
       (mod) => {
         try {
           const value = applyWsPeersEnv(mod, peers);
-          print?.(`[preRun] ENV.WS_PEERS=${value}`);
+          print?.(`[preRun] ENV.WS_PEERS=${value} (${peerCount} peer URL${peerCount === 1 ? '' : 's'})`);
+          print?.('[preRun] argv --enable-webrtc (parallel peers via Official1 signaling when available)');
         } catch (e) {
           print?.(`[preRun] ENV set failed: ${e?.message || e}`);
         }
@@ -406,6 +429,7 @@ export function createModuleConfig({
       // Do NOT touch the constructor config object here (it is poisoned).
       print?.('[runtime] onRuntimeInitialized — C/C++ main will run');
       print?.(`[runtime] WS_PEERS=${peers}`);
+      print?.('[runtime] sync build: window=32 · maxRequests=32 · heap 2048MB · WebRTC on');
       setStatus?.('Runtime initialized — full node starting');
     },
 

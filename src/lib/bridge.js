@@ -110,6 +110,33 @@ export function resolveDefaultWsPeers(
 
 export const BRIDGE_PRESETS = [OFFICIAL1, DEFI_TESTNET];
 
+/**
+ * Parse WS_PEERS (semicolon-separated). Trims empties; keeps order; de-dupes.
+ */
+export function parsePeerList(raw) {
+  return String(raw || '')
+    .split(/[;\n]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((url, i, arr) => arr.indexOf(url) === i);
+}
+
+/** Join peer URLs for ENV.WS_PEERS / localStorage. */
+export function formatPeerList(peers) {
+  return parsePeerList(Array.isArray(peers) ? peers.join(';') : peers).join(';');
+}
+
+/**
+ * Known public browser bridges (P2P /ws). Add more as they come online.
+ * DeFi testnet is separate network — do not mix with Official1 for mainnet.
+ */
+export const MAINNET_WS_BRIDGES = [OFFICIAL1.wsBridge];
+
+/** Default multi-peer string for mainnet (currently Official1 only). */
+export function mainnetPeerPreset() {
+  return formatPeerList(MAINNET_WS_BRIDGES);
+}
+
 const PROXY_URL = '/api/proxy';
 
 /**

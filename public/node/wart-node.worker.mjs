@@ -1,4 +1,2 @@
-// This file is no longer used by emscripten and has been created as a placeholder
-// to allow build systems to transition away from depending on it.
-//
-// Future versions of emscripten will likely stop generating this file at all.
+// Placeholder: emsdk 3.1.74 loads pthreads via new Worker(new URL("wart-node.js", import.meta.url)).
+// Separate wart-node.worker.js is no longer required.

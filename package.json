@@ -11,7 +11,8 @@
     "preview": "astro preview",
     "astro": "astro",
     "test:handshake": "node scripts/test-grunt-handshake.mjs",
-    "test:handshake:wait": "node scripts/test-grunt-handshake.mjs --wait"
+    "test:handshake:wait": "node scripts/test-grunt-handshake.mjs --wait",
+    "snapshot:link": "node scripts/link-public-snapshot.mjs"
   },
   "dependencies": {
     "@astrojs/netlify": "^6.5.1",

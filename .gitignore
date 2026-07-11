@@ -4,6 +4,12 @@ dist/
 .astro/
 .netlify/
 
+# Multi‑GB chain snapshot (link via scripts/link-public-snapshot.mjs).
+# Manifest JSON is committed; the .db3 must not be force-added or Netlify-deployed.
+public/snapshot/chain.db3
+public/snapshot/*.db3
+public/snapshot/*.db3-*
+
 # env / OS
 .env
 .env.*
