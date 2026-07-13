@@ -485,11 +485,32 @@ export function createModuleConfig({
   return config;
 }
 
+/** True when running as a chrome-extension:// (or edge/brave) page. */
+export function isExtensionPage() {
+  return typeof location !== 'undefined'
+    && /^(chrome|moz|safari)-extension:$/.test(location.protocol);
+}
+
 /**
- * Load modularized Emscripten factory from /public/node without Vite transforming it.
+ * Load modularized Emscripten factory from /public/node (or extension /node/).
+ *
+ * Extension CSP forbids blob: module imports, so we load the glue as a real
+ * extension URL module first. Website (Vite) still uses the blob path so the
+ * huge emscripten file is never transformed by the bundler.
  */
 async function loadEmscriptenFactory(glueUrl = NODE_GLUE_URL) {
   const absolute = new URL(glueUrl, window.location.href).href;
+
+  // Prefer direct ES-module import (required for MV3 extension CSP).
+  if (isExtensionPage() || absolute.startsWith('chrome-extension:')) {
+    const mod = await import(/* @vite-ignore */ absolute);
+    const initModule = mod.default;
+    if (typeof initModule !== 'function') {
+      throw new Error('wart-node.js did not export a default factory function');
+    }
+    return initModule;
+  }
+
   const res = await fetch(absolute, { credentials: 'same-origin' });
   if (!res.ok) {
     throw new Error(`Failed to load ${glueUrl}: HTTP ${res.status} ${res.statusText}`);

@@ -3,6 +3,10 @@ node_modules/
 dist/
 .astro/
 .netlify/
+.extension-package/
+
+# Built extension download (regenerate with npm run extension:package)
+public/downloads/*.zip
 
 # Multi‑GB chain snapshot (link via scripts/link-public-snapshot.mjs).
 # Manifest JSON is committed; the .db3 must not be force-added or Netlify-deployed.

@@ -21,6 +21,45 @@ Cross-Origin-Embedder-Policy: require-corp
 
 Set in `netlify.toml`, `public/_headers`, and `astro.config.mjs` (dev).
 
+## Chromium extension (Chrome / Brave / Edge)
+
+Same full WASM node as a **loadable unpacked extension**. Extension pages get COOP/COEP from the manifest (SharedArrayBuffer works even when Brave Shields break the website).
+
+### Download (production site)
+
+Netlify build runs `extension:package` and publishes:
+
+```text
+/downloads/warthog-browser-node-extension.zip
+```
+
+Install: unzip → `chrome://extensions` → Developer mode → **Load unpacked** → select the `warthog-browser-node/` folder (contains `manifest.json`). The website UI also links this zip.
+
+Chrome will **not** install the extension from a URL alone; zip + Load unpacked (or later Chrome Web Store) is required.
+
+### Local build / package
+
+```bash
+npm install
+npm run extension:build      # refresh extension/ (Load unpacked from that folder)
+npm run extension:package    # build + zip → public/downloads/….zip
+# chrome://extensions → Developer mode → Load unpacked → select extension/
+# Click toolbar icon → side panel opens (stays open while you browse, like Leo)
+# Isolation OK → Start node  ·  Expand to tab for a full-page view
+```
+
+Optional GitHub Release (same artifact as the site):
+
+```bash
+npm run extension:package
+gh release create browser-node-extension-v1.0.0 \
+  public/downloads/warthog-browser-node-extension.zip \
+  --title "Browser Node extension v1.0.0" \
+  --notes "Unzip → Load unpacked → select warthog-browser-node/"
+```
+
+Details: [`extension/README.md`](extension/README.md). Rebuild after UI/WASM changes.
+
 ## Local development
 
 ```bash

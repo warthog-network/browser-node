@@ -87,6 +87,72 @@ export function isLocalDevHost(hostname = typeof window !== 'undefined' ? window
     || hostname === '::1';
 }
 
+/** True inside a browser-extension page (no Astro /api/proxy). */
+export function isExtensionPage(
+  loc = typeof window !== 'undefined' ? window.location : null,
+) {
+  if (!loc || !loc.protocol) return false;
+  return /^(chrome|moz|safari)-extension:$/.test(loc.protocol);
+}
+
+/** True when the extension UI is the MetaMask-style toolbar popup. */
+export function isExtensionPopup(
+  loc = typeof window !== 'undefined' ? window.location : null,
+) {
+  return isExtensionPage(loc) && /popup\.html$/i.test(loc.pathname || '');
+}
+
+/** True when the extension UI is the browser side panel (Leo-style dock). */
+export function isExtensionSidePanel(
+  loc = typeof window !== 'undefined' ? window.location : null,
+) {
+  return isExtensionPage(loc) && /sidepanel\.html$/i.test(loc.pathname || '');
+}
+
+/**
+ * Open the full-page dashboard tab. Closes the popup when possible.
+ * Do not run the node in more than one extension surface (shared OPFS lock).
+ */
+export function openExtensionFullTab() {
+  if (typeof chrome === 'undefined' || !chrome.runtime?.getURL) {
+    return false;
+  }
+  const url = chrome.runtime.getURL('node.html');
+  if (chrome.runtime.sendMessage) {
+    chrome.runtime.sendMessage({ type: 'wart-open-full-tab' }).catch?.(() => {
+      chrome.tabs?.create?.({ url });
+    });
+  } else {
+    chrome.tabs?.create?.({ url });
+  }
+  try {
+    // Only closes toolbar popups; side panel / tab ignore this.
+    if (isExtensionPopup()) window.close();
+  } catch {
+    // ignore
+  }
+  return true;
+}
+
+/**
+ * Open the extension side panel (stays open while browsing, like Brave Leo).
+ * Prefer calling from a user gesture (button click).
+ */
+export async function openExtensionSidePanel() {
+  if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
+    return false;
+  }
+  try {
+    await chrome.runtime.sendMessage({ type: 'wart-open-side-panel' });
+    if (isExtensionPopup()) {
+      try { window.close(); } catch { /* ignore */ }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * ws(s)://<this-host>/ws-bridge — preferred for local Astro dev so the browser
  * only talks to the dev server; Node makes the outbound wss:// to Official1.
@@ -101,12 +167,16 @@ export function localDevWsBridgeUrl(
 
 /**
  * Default WS_PEERS for this page:
+ * - extension pages → public Official1 wss (no Vite /ws-bridge)
  * - localhost / 127.0.0.1 → same-origin /ws-bridge (dev proxy)
  * - otherwise → public Official1 wss
  */
 export function resolveDefaultWsPeers(
   loc = typeof window !== 'undefined' ? window.location : null,
 ) {
+  if (loc && isExtensionPage(loc)) {
+    return DEFAULT_WS_PEERS;
+  }
   if (loc && isLocalDevHost(loc.hostname)) {
     return localDevWsBridgeUrl(loc);
   }
@@ -147,31 +217,41 @@ const PROXY_URL = '/api/proxy';
 /**
  * HTTP health via same-origin proxy so COEP require-corp pages work.
  * Direct browser fetch to Official1 fails without CORP on the node.
+ *
+ * Extension pages have no /api/proxy — they fetch Official1 directly and rely on
+ * declarativeNetRequest (extension/rules.json) to inject CORP on responses.
  */
 export async function probeBridgeHttp(httpBase = OFFICIAL1.httpBase, { timeoutMs = 12000 } = {}) {
   const base = String(httpBase || '').replace(/\/$/, '');
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    // Prefer same-origin proxy (works under COEP). Fall back to direct only if proxy missing.
     let res;
-    try {
-      res = await fetch(PROXY_URL, {
-        method: 'POST',
-        signal: controller.signal,
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({
-          nodeBase: base,
-          nodePath: 'chain/head',
-          method: 'GET',
-        }),
-      });
-    } catch {
-      // Dev edge case: try direct (will fail under COEP on Official1)
+    if (isExtensionPage()) {
       res = await fetch(`${base}/chain/head`, {
         signal: controller.signal,
         headers: { Accept: 'application/json' },
       });
+    } else {
+      // Prefer same-origin proxy (works under COEP). Fall back to direct only if proxy missing.
+      try {
+        res = await fetch(PROXY_URL, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({
+            nodeBase: base,
+            nodePath: 'chain/head',
+            method: 'GET',
+          }),
+        });
+      } catch {
+        // Dev edge case: try direct (will fail under COEP on Official1)
+        res = await fetch(`${base}/chain/head`, {
+          signal: controller.signal,
+          headers: { Accept: 'application/json' },
+        });
+      }
     }
 
     const text = await res.text();

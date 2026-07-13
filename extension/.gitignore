@@ -1,0 +1,14 @@
+# Built artifacts (regenerate with npm run extension:build)
+app.js
+app.css
+app.js.map
+background.js
+node.html
+popup.html
+sidepanel.html
+manifest.json
+rules.json
+node/
+img/
+icons/
+_metadata/

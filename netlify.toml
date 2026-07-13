@@ -1,5 +1,6 @@
 [build]
-  command = "npm run build"
+  # Package Chromium extension zip into public/downloads/ before Astro copies public → dist.
+  command = "npm run extension:package && npm run build"
   publish = "dist"
   # PUBLIC_SNAPSHOT_URL is baked into the client at build (import.meta.env).
   # Points at Official1 static chain.db3 — do not put multi‑GB .db3 on Netlify.
@@ -48,3 +49,12 @@
     Cross-Origin-Opener-Policy = "same-origin"
     Cross-Origin-Embedder-Policy = "require-corp"
     Cache-Control = "public, max-age=3600"
+
+# Extension zip download (same-origin; short cache so rebuilds show up)
+[[headers]]
+  for = "/downloads/*"
+  [headers.values]
+    Cross-Origin-Resource-Policy = "same-origin"
+    Cross-Origin-Opener-Policy = "same-origin"
+    Cross-Origin-Embedder-Policy = "require-corp"
+    Cache-Control = "public, max-age=300"

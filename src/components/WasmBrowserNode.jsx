@@ -21,6 +21,11 @@ import {
   OFFICIAL1,
   localDevWsBridgeUrl,
   isLocalDevHost,
+  isExtensionPage,
+  isExtensionPopup,
+  isExtensionSidePanel,
+  openExtensionFullTab,
+  openExtensionSidePanel,
   parsePeerList,
   formatPeerList,
   mainnetPeerPreset,
@@ -945,20 +950,79 @@ export default function WasmBrowserNode() {
       : Math.round(syncStats.blocksPerSec)} blk/s`
     : null;
 
+  const inExtPopup = isExtensionPopup();
+  const inExtSide = isExtensionSidePanel();
+  const inExtDocked = inExtPopup || inExtSide;
+  const inExtPage = isExtensionPage();
+
   return (
-    <div className="dash">
+    <div className={`dash${inExtDocked ? ' dash--popup' : ''}${inExtSide ? ' dash--sidepanel' : ''}`}>
       <header className="dash__header">
         <div className="dash__brand">
           <img src="/img/main_logo.png" alt="" className="dash__logo" />
           <div>
-            <h1>Warthog in your browser</h1>
+            <h1>{inExtDocked ? 'Warthog Node' : 'Warthog in your browser'}</h1>
             <p className="dash__subtitle">
-              Run a full node in this tab — no install required
+              {inExtSide
+                ? 'Side panel — stays open while you browse'
+                : inExtPopup
+                  ? 'Toolbar popup — dock to side panel to stay open'
+                  : inExtPage
+                    ? 'Full node in this tab — keep focused while syncing'
+                    : 'Run a full node in this tab — no install required'}
             </p>
           </div>
         </div>
         <div className={`dash__badge ${badgeClass}`}>{badgeLabel}</div>
       </header>
+
+      {inExtPopup && (
+        <>
+          <div className="ext-popup-banner">
+            <strong>This popup closes when you click away</strong>
+            {' '}— that stops the node. Prefer <strong>Open side panel</strong>
+            {' '}(stays open like Leo) for sync, or <strong>Expand to tab</strong>.
+          </div>
+          <div className="ext-popup-toolbar">
+            <button
+              type="button"
+              className="btn btn--start"
+              onClick={() => openExtensionSidePanel()}
+              title="Dock in the browser side panel — stays open while you browse"
+            >
+              Open side panel
+            </button>
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() => openExtensionFullTab()}
+              title="Open full dashboard tab (do not run popup + tab at once)"
+            >
+              Expand to tab
+            </button>
+          </div>
+        </>
+      )}
+
+      {inExtSide && (
+        <>
+          <div className="ext-popup-banner">
+            <strong>Stays open while you browse</strong>
+            {' '}other tabs. Closing this side panel stops the node.
+            One surface only (don’t also Start in a tab).
+          </div>
+          <div className="ext-popup-toolbar">
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() => openExtensionFullTab()}
+              title="Open full dashboard tab for a larger view"
+            >
+              Expand to tab
+            </button>
+          </div>
+        </>
+      )}
 
       <section className="panel hero">
         <p className="hero__status">{friendlyStatus}</p>
@@ -1019,10 +1083,14 @@ export default function WasmBrowserNode() {
         )}
         {!nodeHealthy && !storageFatal && !memoryFatal && !stopping && browserReady && (
           <p className="hero__hint">
-            Keep this tab focused for faster sync. Only one tab per site can run the node.
+            {inExtSide
+              ? 'Side panel can stay open while you use other tabs. Close the panel → node stops.'
+              : inExtPopup
+                ? 'Use Open side panel to keep the node up while browsing.'
+                : 'Keep this tab focused for faster sync. Only one tab per site can run the node.'}
           </p>
         )}
-        {tabHidden && nodeHealthy && (
+        {tabHidden && nodeHealthy && !inExtSide && (
           <div className="dash__error" style={{ marginTop: '0.85rem', textAlign: 'left' }}>
             <strong>Tab in background</strong> — Chrome may throttle the WASM node.
             Switch back to this tab to keep IBD moving.
@@ -1067,6 +1135,34 @@ export default function WasmBrowserNode() {
           </div>
         )}
       </section>
+
+      {!inExtPage && (
+        <section className="panel ext-download" aria-label="Chromium extension download">
+          <div className="panel__head">
+            <h2>Chromium extension</h2>
+          </div>
+          <p className="ext-download__lead">
+            Same full WASM node as this page, as a Chrome / Brave / Edge extension.
+            Side panel stays open while you browse (more reliable isolation on Brave).
+          </p>
+          <div className="ext-download__actions">
+            <a
+              className="btn btn--ghost"
+              href="/downloads/warthog-browser-node-extension.zip"
+              download="warthog-browser-node-extension.zip"
+            >
+              Download extension (.zip)
+            </a>
+          </div>
+          <ol className="ext-download__steps">
+            <li>Unzip the archive (folder <code>warthog-browser-node</code>).</li>
+            <li>Open <code>chrome://extensions</code> (or <code>brave://extensions</code>).</li>
+            <li>Enable <strong>Developer mode</strong> → <strong>Load unpacked</strong>.</li>
+            <li>Select the unzipped folder that contains <code>manifest.json</code>.</li>
+            <li>Click the toolbar icon → side panel → <strong>Start node</strong>.</li>
+          </ol>
+        </section>
+      )}
 
       <div className="snapshot" aria-label="Network snapshot">
         <div className="snapshot__card">
