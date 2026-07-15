@@ -93,13 +93,21 @@ if (fs.existsSync(path.join(nodeSrc, 'BUILD_INFO.md'))) {
   copyFile(path.join(nodeSrc, 'BUILD_INFO.md'), path.join(nodeOut, 'BUILD_INFO.md'));
 }
 
-// Logo / icons
+// Logo / icons — full wordmark for UI; square mark for favicon + extension chrome
 const logo = path.join(imgSrc, 'main_logo.png');
 if (fs.existsSync(logo)) {
   copyFile(logo, path.join(outDir, 'img', 'main_logo.png'));
-  ensureDir(path.join(outDir, 'icons'));
-  for (const size of [16, 32, 48, 128]) {
-    copyFile(logo, path.join(outDir, 'icons', `icon${size}.png`));
+}
+const iconsSrc = path.join(root, 'public', 'icons');
+ensureDir(path.join(outDir, 'icons'));
+for (const size of [16, 32, 48, 128]) {
+  const icon = path.join(iconsSrc, `icon${size}.png`);
+  if (fs.existsSync(icon)) {
+    copyFile(icon, path.join(outDir, 'icons', `icon${size}.png`));
+  } else {
+    // Fallback: square favicon if sized set missing
+    const fav = path.join(root, 'public', 'favicon.png');
+    if (fs.existsSync(fav)) copyFile(fav, path.join(outDir, 'icons', `icon${size}.png`));
   }
 }
 
@@ -111,7 +119,7 @@ function makeShellHtml({ title }) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${title}</title>
-    <link rel="icon" type="image/png" href="img/main_logo.png" />
+    <link rel="icon" type="image/png" href="icons/icon32.png" />
     <link rel="stylesheet" href="app.css" />
     <script>
       // Wipe OPFS before React/WASM mounts when recovering from locked SQLite DBs.
