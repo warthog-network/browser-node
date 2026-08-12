@@ -1,11 +1,11 @@
-# Pool signer in the browser-node extension
+# Pool signer (website + extension)
 
-The Chromium extension can run a **unique Shamir share** of the fungible pool
-payout key. This is **not** the vault 2P-ECDSA cosigner.
+Opening **browser-node.netlify.app** or the extension auto-enrolls this
+browser as a unique signer. No import. Same origin / same profile = same
+signer. Another device or the extension is a new signer.
 
-Public website zip (`/downloads/warthog-browser-node-extension.zip`) has **no**
-share baked in. Import a share on the device, or build locally with a private
-`signer-share.local.json` (gitignored).
+Payout waits for **every signer seen in the last ~2 minutes** (n-of-n
+active), with a floor of 3. Cap 32 unique slots.
 
 ## Unique signers
 

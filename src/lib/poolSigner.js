@@ -1,18 +1,27 @@
 /**
- * Path A3 — unique pool-threshold signer for the browser-node extension.
- *
- * Each device must hold a *different* issued share. Same JSON on phone +
- * desktop is still one signer. Import an override share for the second device.
+ * Open roster: each website tab-origin / extension instance gets a unique
+ * signerId and auto-enrolls as the next unused Shamir slot.
+ * Payout policy is n-of-n among signers seen in the last ~2 minutes.
  */
 export const DEFAULT_POOL_API = 'https://cartesi-bridge.duckdns.org/api/pool';
 
 const ENABLED_KEY = 'wart.poolSigner.enabled';
-const LAST_KEY = 'wart.poolSigner.last';
 const STATS_KEY = 'wart.poolSigner.stats';
-const OVERRIDE_KEY = 'wart.poolSigner.overrideShare';
+const ID_KEY = 'wart.poolSigner.signerId';
+const SHARE_KEY = 'wart.poolSigner.enrolledShare';
 
 export function defaultPoolApi() {
   return DEFAULT_POOL_API;
+}
+
+function uuid() {
+  if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
 function normalizeShare(j) {
@@ -21,34 +30,24 @@ function normalizeShare(j) {
     .replace(/^0x/i, '')
     .toLowerCase();
   const shareIndex = Number(j.shareIndex);
-  if (!/^[0-9a-f]{64}$/.test(shareHex) || !Number.isFinite(shareIndex)) {
+  const signerId = String(j.signerId || '').trim();
+  if (!/^[0-9a-f]{64}$/.test(shareHex) || !Number.isFinite(shareIndex) || !signerId) {
     return null;
   }
   return {
     scheme: j.scheme || 'wart-pool-threshold-shamir-v0',
     poolAddress: j.poolAddress || null,
-    threshold: Number(j.threshold || 3),
+    threshold: Number(j.threshold || j.need || 3),
     n: Number(j.n || 8),
     shareIndex,
     shareHex,
-    signerId: String(j.signerId || `home-browser-node`).trim(),
-    source: j.source || 'unknown',
+    signerId,
+    source: j.source || 'enrolled',
+    shamirT: Number(j.shamirT || 3),
+    enrolled: j.enrolled,
+    active: j.active,
+    need: j.need || j.threshold,
   };
-}
-
-export async function loadBakedShare() {
-  const url =
-    typeof chrome !== 'undefined' && chrome.runtime?.getURL
-      ? chrome.runtime.getURL('signer-share.json')
-      : '/signer-share.json';
-  try {
-    const res = await fetch(url, { cache: 'no-store' });
-    if (!res.ok) return null;
-    const j = await res.json();
-    return normalizeShare({ ...j, source: 'baked' });
-  } catch {
-    return null;
-  }
 }
 
 async function storageGet(key) {
@@ -84,27 +83,12 @@ async function storageSet(key, value) {
   }
 }
 
-export async function loadOverrideShare() {
-  const raw = await storageGet(OVERRIDE_KEY);
-  if (!raw) return null;
-  return normalizeShare({ ...raw, source: 'imported' });
-}
-
-export async function saveOverrideShare(obj) {
-  const share = normalizeShare({ ...obj, source: 'imported' });
-  if (!share) throw new Error('Not a valid signer-share JSON');
-  await storageSet(OVERRIDE_KEY, share);
-  return share;
-}
-
-export async function clearOverrideShare() {
-  await storageSet(OVERRIDE_KEY, null);
-}
-
-export async function loadActiveShare() {
-  const over = await loadOverrideShare();
-  if (over) return over;
-  return loadBakedShare();
+export async function getOrCreateSignerId() {
+  let id = await storageGet(ID_KEY);
+  if (typeof id === 'string' && id.length >= 16) return id;
+  id = `node-${uuid()}`;
+  await storageSet(ID_KEY, id);
+  return id;
 }
 
 async function poolGet(api, qs) {
@@ -143,6 +127,32 @@ async function withRetry(fn, { tries = 3, delayMs = 400 } = {}) {
 
 export async function fetchThresholdStatus(api = DEFAULT_POOL_API) {
   return withRetry(() => poolGet(api, 'threshold=1'));
+}
+
+export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
+  const r = await withRetry(() =>
+    poolPost(api, {
+      action: 'threshold_enroll',
+      signerId,
+      role: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
+    }),
+  );
+  const share = normalizeShare({ ...r, source: 'enrolled' });
+  if (!share) throw new Error('enroll returned no share');
+  await storageSet(SHARE_KEY, share);
+  await storageSet(ID_KEY, share.signerId);
+  return share;
+}
+
+export async function loadActiveShare(api = DEFAULT_POOL_API) {
+  const signerId = await getOrCreateSignerId();
+  try {
+    return await enrollSigner(signerId, api);
+  } catch (e) {
+    const cached = normalizeShare(await storageGet(SHARE_KEY));
+    if (cached) return cached;
+    throw e;
+  }
 }
 
 export async function heartbeat(share, api = DEFAULT_POOL_API) {
@@ -203,8 +213,4 @@ export async function writeStats(partial) {
   const next = { ...prev, ...partial };
   await storageSet(STATS_KEY, next);
   return next;
-}
-
-export async function writeLast(info) {
-  await storageSet(LAST_KEY, info);
 }
