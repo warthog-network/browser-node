@@ -1025,7 +1025,7 @@ export default function WasmBrowserNode() {
         </>
       )}
 
-      {inExtPage && <PoolThresholdSigner />}
+      <PoolThresholdSigner />
 
       <section className="panel hero">
         <p className="hero__status">{friendlyStatus}</p>

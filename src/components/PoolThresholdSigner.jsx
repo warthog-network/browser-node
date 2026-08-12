@@ -229,8 +229,9 @@ export default function PoolThresholdSigner() {
 
       {!share ? (
         <p className="pool-signer__lead">
-          No unique share on this device. Import a <code>signer-share.json</code>{' '}
-          (phone vs desktop must be <em>different</em> slots).
+          Website / public zip has no share baked in. Import your unique{' '}
+          <code>signer-share.json</code> to sign from this tab (phone vs desktop
+          must be <em>different</em> slots).
         </p>
       ) : (
         <>
