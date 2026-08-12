@@ -323,13 +323,31 @@ writeJson(path.join(outDir, 'rules.json'), [
       resourceTypes: ['xmlhttprequest', 'other', 'media'],
     },
   },
+  {
+    id: 3,
+    priority: 1,
+    action: {
+      type: 'modifyHeaders',
+      responseHeaders: [
+        {
+          header: 'Cross-Origin-Resource-Policy',
+          operation: 'set',
+          value: 'cross-origin',
+        },
+      ],
+    },
+    condition: {
+      urlFilter: '||cartesi-bridge.duckdns.org',
+      resourceTypes: ['xmlhttprequest', 'other'],
+    },
+  },
 ]);
 
 // Manifest V3 — COOP/COEP enable SharedArrayBuffer for WASM pthreads
 writeJson(path.join(outDir, 'manifest.json'), {
   manifest_version: 3,
   name: 'Warthog Browser Node',
-  version: '1.0.0',
+  version: '1.2.0',
   description:
     'Run a Warthog full node in the browser (WASM + pthreads + OPFS). Icon opens the side panel (stays open while you browse).',
   icons: {
@@ -375,6 +393,7 @@ writeJson(path.join(outDir, 'manifest.json'), {
     'wss://warthognode.duckdns.org/*',
     'https://warthog-defitestnet.duckdns.org/*',
     'wss://warthog-defitestnet.duckdns.org/*',
+    'https://cartesi-bridge.duckdns.org/*',
   ],
   declarative_net_request: {
     rule_resources: [
@@ -461,6 +480,14 @@ for a Netlify origin.
 `;
 
 fs.writeFileSync(path.join(outDir, 'README.md'), readme, 'utf8');
+
+const localShare = path.join(root, 'signer-share.local.json');
+if (fs.existsSync(localShare)) {
+  copyFile(localShare, path.join(outDir, 'signer-share.json'));
+  console.log('[extension] baked unique pool signer from signer-share.local.json');
+} else {
+  console.log('[extension] no signer-share.local.json — public build (no pool share)');
+}
 
 const wasmSize = fs.statSync(path.join(nodeOut, 'wart-node.wasm')).size;
 console.log(`[extension] ready: ${outDir}`);

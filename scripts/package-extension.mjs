@@ -31,6 +31,9 @@ const EXCLUDE = new Set([
   '.git',
   '.gitignore',
   '.DS_Store',
+  // Never put a live pool key share in the public website zip.
+  'signer-share.json',
+  'signer-share.local.json',
 ]);
 
 function rmrf(p) {

@@ -78,6 +78,110 @@
   color: var(--danger);
 }
 
+.pool-signer__lead,
+.pool-signer__meta {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.pool-signer__slots {
+  list-style: none;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.pool-signer__slots li {
+  padding: 0.15rem 0;
+}
+
+.pool-signer__slots li.is-me {
+  color: var(--brand-yellow, #fdb913);
+  font-weight: 600;
+}
+
+.pool-signer .btn.is-on {
+  color: var(--brand-yellow, #fdb913);
+  border-color: rgba(253, 185, 19, 0.55);
+}
+
+.pool-signer__status {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0.45rem 0 0.15rem;
+  font-size: 0.82rem;
+}
+
+.pool-signer__dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: #6b7c86;
+  flex-shrink: 0;
+}
+
+.pool-signer__status.is-signing .pool-signer__dot {
+  background: #fdb913;
+  box-shadow: 0 0 0 4px rgba(253, 185, 19, 0.22);
+  animation: pool-signer-pulse 1s ease-in-out infinite;
+}
+
+.pool-signer__status.is-idle .pool-signer__dot {
+  background: #3dcea8;
+}
+
+.pool-signer__status.is-err .pool-signer__dot {
+  background: #f25c05;
+}
+
+.pool-signer__count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.pool-signer__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+
+.pool-signer__import {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+}
+
+.pool-signer__import textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, monospace;
+  font-size: 0.7rem;
+  background: var(--bg-elevated, #12181c);
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem;
+}
+
+@keyframes pool-signer-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.25);
+    opacity: 0.7;
+  }
+}
+
 .dash__badge.is-warn {
   color: var(--warn);
   border-color: rgba(255, 210, 122, 0.4);

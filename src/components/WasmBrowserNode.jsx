@@ -47,6 +47,7 @@ import {
   snapshotMissingTip,
 } from '../lib/snapshotPublic.js';
 import { formatHashrate, shortAddr } from '../lib/presets.js';
+import PoolThresholdSigner from './PoolThresholdSigner.jsx';
 import './NodeDashboard.css';
 
 const MAX_LOG = 400;
@@ -1023,6 +1024,8 @@ export default function WasmBrowserNode() {
           </div>
         </>
       )}
+
+      {inExtPage && <PoolThresholdSigner />}
 
       <section className="panel hero">
         <p className="hero__status">{friendlyStatus}</p>

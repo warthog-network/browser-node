@@ -18,6 +18,11 @@ public/snapshot/*.db3-*
 .env
 .env.*
 !.env.example
+
+# Private pool-threshold share (home signer). Never ship in the public zip.
+signer-share.local.json
+signer-share-phone.local.json
+extension/signer-share.json
 .DS_Store
 *.log
 npm-debug.log*
