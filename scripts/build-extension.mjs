@@ -14,6 +14,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const EXT_VERSION = String(pkg.version || '1.3.0');
 const outDir = path.join(root, 'extension');
 const nodeSrc = path.join(root, 'public', 'node');
 const imgSrc = path.join(root, 'public', 'img');
@@ -347,7 +349,7 @@ writeJson(path.join(outDir, 'rules.json'), [
 writeJson(path.join(outDir, 'manifest.json'), {
   manifest_version: 3,
   name: 'Warthog Browser Node',
-  version: '1.2.0',
+  version: EXT_VERSION,
   description:
     'Run a Warthog full node in the browser (WASM + pthreads + OPFS). Icon opens the side panel (stays open while you browse).',
   icons: {

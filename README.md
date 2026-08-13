@@ -52,9 +52,9 @@ Optional GitHub Release (same artifact as the site):
 
 ```bash
 npm run extension:package
-gh release create browser-node-extension-v1.0.0 \
+gh release create browser-node-extension-v1.3.0 \
   public/downloads/warthog-browser-node-extension.zip \
-  --title "Browser Node extension v1.0.0" \
+  --title "Browser Node extension v1.3.0" \
   --notes "Unzip → Load unpacked → select warthog-browser-node/"
 ```
 
