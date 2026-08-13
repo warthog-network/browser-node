@@ -10,6 +10,7 @@ import {
   writeStats,
   DEFAULT_POOL_API,
 } from '../lib/poolSigner.js';
+import { formatVerifyLine } from '../lib/poolVerify.js';
 
 const POLL_MS = 2500;
 
@@ -33,6 +34,7 @@ export default function PoolThresholdSigner() {
   const [log, setLog] = useState('joining roster…');
   const [error, setError] = useState(null);
   const [stats, setStats] = useState({ signedCount: 0 });
+  const [verify, setVerify] = useState(null);
   const tickLock = useRef(false);
 
   useEffect(() => {
@@ -69,7 +71,8 @@ export default function PoolThresholdSigner() {
     tickLock.current = true;
     try {
       await heartbeat(share);
-      const { status: st, results, openCount } = await contributeOpen(share);
+      const { status: st, results, openCount, lastVerify } = await contributeOpen(share);
+      if (lastVerify) setVerify(lastVerify);
       const serverEpoch = st.signers?.epoch ?? st.epoch;
       if (
         serverEpoch != null &&
@@ -129,9 +132,16 @@ export default function PoolThresholdSigner() {
           `signed ${shortTicket(last.ticketId)} · paid ${String(last.payout?.txHash || '').slice(0, 10)}…`,
         );
       } else {
-        setLog(
-          `signing ${shortTicket(last.ticketId)} · ${last.count || '?'}/${last.need || need}`,
-        );
+        const skipped = results.filter((r) => r.skipped);
+        if (skipped.length && !fresh.length) {
+          setPhase('error');
+          setError(skipped[0].error || 'verification failed');
+          setLog(`held share — ${skipped[0].error || 'verify failed'}`);
+        } else {
+          setLog(
+            `signing ${shortTicket(last.ticketId)} · ${last.count || '?'}/${last.need || need}`,
+          );
+        }
       }
     } catch (e) {
       const msg = e?.message || String(e);
@@ -243,13 +253,18 @@ export default function PoolThresholdSigner() {
             You are <code>{shortId(share.signerId)}</code> · slot {share.shareIndex}
             {share.epoch != null ? ` · epoch ${share.epoch}` : ''}
             {' · '}
-            share lives in this tab only. Close it and that hex is dead.
+            share lives in this tab only. Signs only after notice + machine + SPV tip check out.
           </>
         ) : (
           <>Anyone with this page or the extension is a unique signer — joining…</>
         )}
       </p>
       <p className="pool-signer__meta">{log}</p>
+      {verify && (
+        <p className={`pool-signer__meta${verify.ok === false ? ' is-warn' : ''}`}>
+          {formatVerifyLine(verify)}
+        </p>
+      )}
       {open.length > 0 && (
         <p className="pool-signer__meta">
           Open:{' '}

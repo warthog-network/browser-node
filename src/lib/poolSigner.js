@@ -217,7 +217,45 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
     (r) => r.status === 'open' || r.status === 'failed',
   );
   const results = [];
+  let lastVerify = null;
+  const { verifyOpenRequest, probeMachineHealth } = await import('./poolVerify.js');
+  if (open.length === 0) {
+    try {
+      lastVerify = await probeMachineHealth();
+    } catch (e) {
+      lastVerify = { ok: false, checks: {}, reasons: [e?.message || String(e)] };
+    }
+    return { status: st, results, openCount: 0, lastVerify };
+  }
   for (const req of open) {
+    let verify;
+    try {
+      verify = await verifyOpenRequest({
+        ticketId: req.ticketId,
+        toAddress: req.toAddress,
+        amountE8: req.amountE8,
+        poolAddress: st.signers?.poolAddress || share.poolAddress,
+        labDemo: Boolean(req.labDemo),
+      });
+      lastVerify = verify;
+    } catch (e) {
+      results.push({
+        ticketId: req.ticketId,
+        skipped: true,
+        error: e?.message || String(e),
+      });
+      lastVerify = { ok: false, checks: {}, reasons: [e?.message || String(e)] };
+      continue;
+    }
+    if (!verify.ok) {
+      results.push({
+        ticketId: req.ticketId,
+        skipped: true,
+        error: (verify.reasons || []).join('; ') || 'verification failed',
+        verify,
+      });
+      continue;
+    }
     try {
       const r = await withRetry(() =>
         poolPost(api, {
@@ -226,9 +264,10 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
           shareIndex: share.shareIndex,
           shareHex: share.shareHex,
           signerId: share.signerId,
+          verification: verify.attestation,
         }),
       );
-      results.push({ ticketId: req.ticketId, ...r });
+      results.push({ ticketId: req.ticketId, ...r, verify });
     } catch (e) {
       if (isEpochDead(e)) {
         liveShare = null;
@@ -236,7 +275,7 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
       throw e;
     }
   }
-  return { status: st, results, openCount: open.length };
+  return { status: st, results, openCount: open.length, lastVerify };
 }
 
 export async function readEnabled() {
