@@ -125,16 +125,41 @@ export async function fetchInspectPool() {
   }
 }
 
+async function graphqlNoticesPage(cursor) {
+  const after = cursor ? `, before: "${cursor}"` : '';
+  const query = `{ notices(last: 100${after}) { pageInfo { hasPreviousPage startCursor } edges { node { index payload } } } vouchers(last: 20) { edges { node { index destination payload } } } }`;
+  return fetchJson(ROLLUP_GRAPHQL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query }),
+  });
+}
+
 export async function fetchReleaseNotice(ticketId) {
   const id = String(ticketId || '').trim();
-  const query = `{ notices(last: 250) { edges { node { index payload } } } vouchers(last: 20) { edges { node { index destination payload } } } }`;
-  let json;
   try {
-    json = await fetchJson(ROLLUP_GRAPHQL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query }),
-    });
+    let cursor = null;
+    let best = null;
+    let voucherCount = 0;
+    for (let page = 0; page < 20; page++) {
+      const json = await graphqlNoticesPage(cursor);
+      voucherCount = Math.max(
+        voucherCount,
+        (json?.data?.vouchers?.edges || []).length,
+      );
+      const conn = json?.data?.notices || {};
+      for (const e of conn.edges || []) {
+        const obj = parseNoticePayload(e?.node?.payload);
+        if (!obj || obj.type !== 'pool_release_ticket') continue;
+        if (String(obj.ticketId || '') !== id) continue;
+        const idx = Number(e?.node?.index ?? 0);
+        if (!best || idx >= best._index) best = { ...obj, _index: idx };
+      }
+      if (best) break;
+      if (!conn.pageInfo?.hasPreviousPage || !conn.pageInfo?.startCursor) break;
+      cursor = conn.pageInfo.startCursor;
+    }
+    return { source: 'rollup-graphql', notice: best, voucherCount };
   } catch {
     const snap = await fetchJson(`${VERIFY_SNAPSHOT}${encodeURIComponent(id)}`);
     return {
@@ -143,20 +168,6 @@ export async function fetchReleaseNotice(ticketId) {
       voucherCount: Number(snap.voucherCount || 0),
     };
   }
-  const edges = json?.data?.notices?.edges || [];
-  let best = null;
-  for (const e of edges) {
-    const obj = parseNoticePayload(e?.node?.payload);
-    if (!obj || obj.type !== 'pool_release_ticket') continue;
-    if (String(obj.ticketId || '') !== id) continue;
-    const idx = Number(e?.node?.index ?? 0);
-    if (!best || idx >= best._index) best = { ...obj, _index: idx };
-  }
-  return {
-    source: 'rollup-graphql',
-    notice: best,
-    voucherCount: (json?.data?.vouchers?.edges || []).length,
-  };
 }
 
 export async function fetchIndependentHead() {
@@ -183,7 +194,13 @@ export function findInspectTicket(pool, ticketId) {
   return list.find((t) => String(t.ticketId || '') === id) || null;
 }
 
-export function evaluateVerification({ req, inspectPool, notice, wartHead }) {
+export function evaluateVerification({
+  req,
+  inspectPool,
+  notice,
+  wartHead,
+  requireNotice = true,
+}) {
   const checks = {
     inspect: false,
     notice: false,
@@ -218,13 +235,9 @@ export function evaluateVerification({ req, inspectPool, notice, wartHead }) {
     const amtOk = e8Match(notice.amountE8, req.amountE8);
     const toOk = !req.toAddress || !notice.toAddress || addrsMatch(notice.toAddress, req.toAddress);
     if (amtOk && toOk) checks.notice = true;
-    else reasons.push('GraphQL release notice amount/to mismatch');
-  } else if (!lab) {
-    reasons.push('no pool_release_ticket notice for this ticket');
-  }
-
-  if (!lab && !checks.notice && !checks.inspectTicket) {
-    reasons.push('neither notice nor inspect ticket attests this redeem');
+    else reasons.push('release notice amount/to mismatch — not this burn');
+  } else if (requireNotice) {
+    reasons.push('no pool_release_ticket notice — that notice is the burn attestation');
   }
 
   const spv = inspectPool?.spv || {};
@@ -252,7 +265,7 @@ export function evaluateVerification({ req, inspectPool, notice, wartHead }) {
   const ok =
     checks.inspect &&
     checks.spv &&
-    (lab || checks.notice || checks.inspectTicket);
+    (!requireNotice || checks.notice);
 
   return {
     ok,
@@ -335,10 +348,11 @@ export async function probeMachineHealth() {
   const inspect = await fetchInspectPool();
   const wartHead = await fetchIndependentHead();
   const ev = evaluateVerification({
-    req: { ticketId: 'probe', labDemo: true },
+    req: { ticketId: 'probe' },
     inspectPool: inspect.pool,
     notice: null,
     wartHead,
+    requireNotice: false,
   });
   return ev;
 }
