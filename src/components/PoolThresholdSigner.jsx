@@ -174,7 +174,8 @@ export default function PoolThresholdSigner() {
 
   const signers = status?.signers;
   const issued = (signers?.slots || []).filter((s) => s.issued);
-  const online = issued.filter((s) => s.online);
+  const live = issued.filter((s) => s.online);
+  const abandoned = issued.filter((s) => !s.online);
   const me = issued.find((s) => share && s.signerId === share.signerId);
   const displayCount = Math.max(
     Number(stats.signedCount || 0),
@@ -182,7 +183,18 @@ export default function PoolThresholdSigner() {
   );
   const open = status?.open || [];
   const need = status?.t || signers?.policyT || share?.need || 3;
-  const active = signers?.active ?? online.length;
+  const active = signers?.active ?? live.length;
+
+  const renderSlot = (s) => (
+    <li
+      key={s.shareIndex}
+      className={s.signerId === share?.signerId ? 'is-me' : undefined}
+    >
+      #{s.shareIndex} {shortId(s.signerId)}
+      {s.online ? ' · live' : ''}
+      {s.signedCount ? ` · ${s.signedCount} signed` : ''}
+    </li>
+  );
 
   const phaseLabel =
     !share && phase === 'error'
@@ -253,19 +265,19 @@ export default function PoolThresholdSigner() {
       )}
       {error ? <p className="dash__error">{error}</p> : null}
 
-      {issued.length > 0 && (
-        <ul className="pool-signer__slots">
-          {issued.map((s) => (
-            <li
-              key={s.shareIndex}
-              className={s.signerId === share?.signerId ? 'is-me' : undefined}
-            >
-              #{s.shareIndex} {shortId(s.signerId)}
-              {s.online ? ' · live' : ' · abandoned'}
-              {s.signedCount ? ` · ${s.signedCount} signed` : ''}
-            </li>
-          ))}
-        </ul>
+      {live.length > 0 && (
+        <ul className="pool-signer__slots">{live.map(renderSlot)}</ul>
+      )}
+      {abandoned.length > 0 && (
+        <details className="pool-signer__history">
+          <summary>
+            Abandoned history
+            <span>{abandoned.length}</span>
+          </summary>
+          <ul className="pool-signer__slots pool-signer__slots--history">
+            {abandoned.map(renderSlot)}
+          </ul>
+        </details>
       )}
     </section>
   );

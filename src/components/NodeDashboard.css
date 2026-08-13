@@ -103,6 +103,52 @@
   font-weight: 600;
 }
 
+.pool-signer__history {
+  margin: 0.55rem 0 0;
+}
+
+.pool-signer__history summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  user-select: none;
+}
+
+.pool-signer__history summary::-webkit-details-marker {
+  display: none;
+}
+
+.pool-signer__history summary::before {
+  content: '';
+  width: 0.35rem;
+  height: 0.35rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.pool-signer__history[open] summary::before {
+  transform: rotate(45deg);
+  margin-top: -0.15rem;
+}
+
+.pool-signer__history summary span {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+.pool-signer__slots--history {
+  margin-top: 0.25rem;
+  opacity: 0.75;
+}
+
 .pool-signer .btn.is-on {
   color: var(--brand-yellow, #fdb913);
   border-color: rgba(253, 185, 19, 0.55);
