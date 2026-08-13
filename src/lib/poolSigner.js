@@ -216,18 +216,28 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
   const open = (st.open || []).filter(
     (r) => r.status === 'open' || r.status === 'failed',
   );
+  // Lab-demo tickets have no burn notice — they are not redeem attempts.
+  const actionable = open.filter(
+    (r) => !r.labDemo && !/^lab-demo-/.test(String(r.ticketId || '')),
+  );
   const results = [];
   let lastVerify = null;
   const { verifyOpenRequest, probeMachineHealth } = await import('./poolVerify.js');
-  if (open.length === 0) {
+  if (actionable.length === 0) {
     try {
       lastVerify = await probeMachineHealth();
     } catch (e) {
       lastVerify = { ok: false, checks: {}, reasons: [e?.message || String(e)] };
     }
-    return { status: st, results, openCount: 0, lastVerify };
+    return {
+      status: st,
+      results,
+      openCount: 0,
+      ignoredOpen: open.length,
+      lastVerify,
+    };
   }
-  for (const req of open) {
+  for (const req of actionable) {
     let verify;
     try {
       verify = await verifyOpenRequest({
@@ -275,7 +285,7 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
       throw e;
     }
   }
-  return { status: st, results, openCount: open.length, lastVerify };
+  return { status: st, results, openCount: actionable.length, lastVerify };
 }
 
 export async function readEnabled() {

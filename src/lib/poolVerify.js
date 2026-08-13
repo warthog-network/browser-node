@@ -359,11 +359,16 @@ export async function probeMachineHealth() {
 
 export function formatVerifyLine(v) {
   if (!v) return 'verify —';
+  const noticeBit = v.checks?.notice
+    ? '✓ notice'
+    : v.ok
+      ? '— notice'
+      : '✗ notice';
   const bit = (ok, label) => `${ok ? '✓' : '✗'} ${label}`;
   const lag =
     v.wartHead?.lag == null ? '' : ` · lag ${v.wartHead.lag}`;
   const h = v.machine?.bestHeight
     ? ` · SPV #${v.machine.bestHeight}/${v.wartHead?.height || '?'}${lag}`
     : '';
-  return `${bit(v.checks?.notice, 'notice')} · ${bit(v.checks?.inspect, 'machine')} · ${bit(v.checks?.spv, 'SPV')}${h}`;
+  return `${noticeBit} · ${bit(v.checks?.inspect, 'machine')} · ${bit(v.checks?.spv, 'SPV')}${h}`;
 }

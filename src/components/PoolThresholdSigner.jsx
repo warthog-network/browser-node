@@ -133,7 +133,14 @@ export default function PoolThresholdSigner() {
         );
       } else {
         const skipped = results.filter((r) => r.skipped);
-        if (skipped.length && !fresh.length) {
+        const waitingNotice = skipped.filter((r) =>
+          /no pool_release_ticket|burn attestation/i.test(r.error || ''),
+        );
+        if (waitingNotice.length && waitingNotice.length === skipped.length && !fresh.length) {
+          setPhase('online');
+          setError(null);
+          setLog('watching · no burn/release notice yet');
+        } else if (skipped.length && !fresh.length) {
           setPhase('error');
           setError(skipped[0].error || 'verification failed');
           setLog(`held share — ${skipped[0].error || 'verify failed'}`);
@@ -191,7 +198,9 @@ export default function PoolThresholdSigner() {
     Number(stats.signedCount || 0),
     Number(me?.signedCount || 0),
   );
-  const open = status?.open || [];
+  const open = (status?.open || []).filter(
+    (r) => !r.labDemo && !/^lab-demo-/.test(String(r.ticketId || '')),
+  );
   const need = status?.t || signers?.policyT || share?.need || 3;
   const active = signers?.active ?? live.length;
 
