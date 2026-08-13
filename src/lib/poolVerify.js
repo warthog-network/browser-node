@@ -108,21 +108,35 @@ async function fetchJson(url, init) {
   return body;
 }
 
+let inspectCache = { at: 0, value: null };
+const INSPECT_TTL_MS = 15000;
+
 export async function fetchInspectPool() {
+  if (inspectCache.value && Date.now() - inspectCache.at < INSPECT_TTL_MS) {
+    return inspectCache.value;
+  }
+  // Prefer the coordinator snapshot (server-cached) so many browser
+  // signers do not lock Cartesi InspectState.
   try {
-    const raw = await fetchJson(ROLLUP_INSPECT);
-    const pool = decodeInspectBody(raw);
-    if (!pool?.ok) throw new Error('inspect/pool not ok');
-    return { source: 'rollup-inspect', raw, pool };
-  } catch (directErr) {
     const snap = await fetchJson(`${VERIFY_SNAPSHOT}1`);
     if (snap?.inspect?.pool?.ok) {
-      return { source: 'pool-snapshot', raw: snap.inspect.raw || snap.inspect, pool: snap.inspect.pool };
+      const value = {
+        source: 'pool-snapshot',
+        raw: snap.inspect.raw || snap.inspect,
+        pool: snap.inspect.pool,
+      };
+      inspectCache = { at: Date.now(), value };
+      return value;
     }
-    throw new Error(
-      `inspect failed (${directErr?.message || directErr})`,
-    );
+  } catch {
+    /* fall through to direct inspect */
   }
+  const raw = await fetchJson(ROLLUP_INSPECT);
+  const pool = decodeInspectBody(raw);
+  if (!pool?.ok) throw new Error('inspect/pool not ok');
+  const value = { source: 'rollup-inspect', raw, pool };
+  inspectCache = { at: Date.now(), value };
+  return value;
 }
 
 async function graphqlNoticesPage(cursor) {
