@@ -2,6 +2,10 @@
  * Open roster: each website tab-origin / extension instance gets a unique
  * signerId and auto-enrolls as the next unused Shamir slot.
  * Payout policy is n-of-n among signers seen in the last ~2 minutes.
+ *
+ * Share material is a RAM lease only. Come online → HTTPS enroll.
+ * Close the tab / miss heartbeats → coordinator reshares, old hex is dead.
+ * signerId stays in storage so you get the same slot back; shareHex does not.
  */
 export const DEFAULT_POOL_API = 'https://cartesi-bridge.duckdns.org/api/pool';
 
@@ -9,6 +13,9 @@ const ENABLED_KEY = 'wart.poolSigner.enabled';
 const STATS_KEY = 'wart.poolSigner.stats';
 const ID_KEY = 'wart.poolSigner.signerId';
 const SHARE_KEY = 'wart.poolSigner.enrolledShare';
+
+/** In-memory only. Never write shareHex back to storage. */
+let liveShare = null;
 
 export function defaultPoolApi() {
   return DEFAULT_POOL_API;
@@ -47,6 +54,8 @@ function normalizeShare(j) {
     enrolled: j.enrolled,
     active: j.active,
     need: j.need || j.threshold,
+    epoch: j.epoch == null ? null : Number(j.epoch),
+    leaseMs: Number(j.leaseMs || 120000),
   };
 }
 
@@ -81,6 +90,26 @@ async function storageSet(key, value) {
   } catch {
     /* */
   }
+}
+
+async function storageRemove(key) {
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      await chrome.storage.local.remove(key);
+    }
+  } catch {
+    /* */
+  }
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* */
+  }
+}
+
+function isEpochDead(err) {
+  const msg = err?.message || String(err || '');
+  return /EPOCH_ROTATED|share is dead|share material|does not match/i.test(msg);
 }
 
 export async function getOrCreateSignerId() {
@@ -139,30 +168,47 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
   );
   const share = normalizeShare({ ...r, source: 'enrolled' });
   if (!share) throw new Error('enroll returned no share');
-  await storageSet(SHARE_KEY, share);
+  liveShare = share;
   await storageSet(ID_KEY, share.signerId);
+  await storageRemove(SHARE_KEY);
   return share;
 }
 
 export async function loadActiveShare(api = DEFAULT_POOL_API) {
+  await storageRemove(SHARE_KEY);
   const signerId = await getOrCreateSignerId();
-  try {
-    return await enrollSigner(signerId, api);
-  } catch (e) {
-    const cached = normalizeShare(await storageGet(SHARE_KEY));
-    if (cached) return cached;
-    throw e;
-  }
+  return enrollSigner(signerId, api);
+}
+
+export function peekLiveShare() {
+  return liveShare;
+}
+
+export function dropLiveShare() {
+  liveShare = null;
 }
 
 export async function heartbeat(share, api = DEFAULT_POOL_API) {
-  return withRetry(() =>
+  const r = await withRetry(() =>
     poolPost(api, {
       action: 'threshold_heartbeat',
       signerId: share.signerId,
       shareIndex: share.shareIndex,
+      epoch: share.epoch,
     }),
   );
+  if (
+    r.rotated ||
+    (r.epoch != null && share.epoch != null && Number(r.epoch) !== Number(share.epoch))
+  ) {
+    liveShare = null;
+    const err = new Error(
+      'EPOCH_ROTATED: share is dead — re-enroll over HTTPS for a fresh lease',
+    );
+    err.code = 'EPOCH_ROTATED';
+    throw err;
+  }
+  return r;
 }
 
 export async function contributeOpen(share, api = DEFAULT_POOL_API) {
@@ -172,16 +218,23 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
   );
   const results = [];
   for (const req of open) {
-    const r = await withRetry(() =>
-      poolPost(api, {
-        action: 'threshold_contribute',
-        ticketId: req.ticketId,
-        shareIndex: share.shareIndex,
-        shareHex: share.shareHex,
-        signerId: share.signerId,
-      }),
-    );
-    results.push({ ticketId: req.ticketId, ...r });
+    try {
+      const r = await withRetry(() =>
+        poolPost(api, {
+          action: 'threshold_contribute',
+          ticketId: req.ticketId,
+          shareIndex: share.shareIndex,
+          shareHex: share.shareHex,
+          signerId: share.signerId,
+        }),
+      );
+      results.push({ ticketId: req.ticketId, ...r });
+    } catch (e) {
+      if (isEpochDead(e)) {
+        liveShare = null;
+      }
+      throw e;
+    }
   }
   return { status: st, results, openCount: open.length };
 }

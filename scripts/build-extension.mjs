@@ -481,13 +481,11 @@ for a Netlify origin.
 
 fs.writeFileSync(path.join(outDir, 'README.md'), readme, 'utf8');
 
-const localShare = path.join(root, 'signer-share.local.json');
-if (fs.existsSync(localShare)) {
-  copyFile(localShare, path.join(outDir, 'signer-share.json'));
-  console.log('[extension] baked unique pool signer from signer-share.local.json');
-} else {
-  console.log('[extension] no signer-share.local.json — public build (no pool share)');
-}
+// Lease mode: do not bake share hex into the unpacked folder. The panel
+// enrolls over HTTPS and keeps the share in RAM only.
+const baked = path.join(outDir, 'signer-share.json');
+if (fs.existsSync(baked)) fs.rmSync(baked, { force: true });
+console.log('[extension] lease mode — no baked share (HTTPS enroll, RAM only)');
 
 const wasmSize = fs.statSync(path.join(nodeOut, 'wart-node.wasm')).size;
 console.log(`[extension] ready: ${outDir}`);

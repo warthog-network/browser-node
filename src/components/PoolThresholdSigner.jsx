@@ -68,15 +68,28 @@ export default function PoolThresholdSigner() {
     if (!share || !enabled || tickLock.current) return;
     tickLock.current = true;
     try {
-      const hb = await heartbeat(share).catch(() => null);
+      await heartbeat(share);
       const { status: st, results, openCount } = await contributeOpen(share);
+      const serverEpoch = st.signers?.epoch ?? st.epoch;
+      if (
+        serverEpoch != null &&
+        share.epoch != null &&
+        Number(serverEpoch) !== Number(share.epoch)
+      ) {
+        const s = await loadActiveShare();
+        setShare(s);
+        setLog(`new lease · epoch ${s.epoch ?? serverEpoch}`);
+        setStatus(st);
+        setError(null);
+        return;
+      }
       setStatus(st);
       setError(null);
 
       const me = (st.signers?.slots || []).find(
         (x) => x.signerId === share.signerId,
       );
-      const serverCount = Number(me?.signedCount ?? hb?.signedCount ?? 0);
+      const serverCount = Number(me?.signedCount ?? 0);
       const need = st.t || st.signers?.policyT || 3;
       const active = st.signers?.active ?? 0;
 
@@ -124,11 +137,13 @@ export default function PoolThresholdSigner() {
       const msg = e?.message || String(e);
       setPhase('error');
       setError(msg);
-      if (/mismatch|not issued|does not own|share material/i.test(msg)) {
+      if (/EPOCH_ROTATED|share is dead|mismatch|not issued|does not own|share material/i.test(msg)) {
         try {
           const s = await loadActiveShare();
           setShare(s);
-          setLog('re-joined roster after share rotation');
+          setLog(`new lease · epoch ${s.epoch ?? '?'} · slot ${s.shareIndex}`);
+          setPhase('online');
+          setError(null);
         } catch {
           /* keep error */
         }
@@ -214,8 +229,9 @@ export default function PoolThresholdSigner() {
         {share ? (
           <>
             You are <code>{shortId(share.signerId)}</code> · slot {share.shareIndex}
+            {share.epoch != null ? ` · epoch ${share.epoch}` : ''}
             {' · '}
-            n-of-n among nodes running now (min {share.shamirT || 3}).
+            share lives in this tab only. Close it and that hex is dead.
           </>
         ) : (
           <>Anyone with this page or the extension is a unique signer — joining…</>
@@ -245,7 +261,7 @@ export default function PoolThresholdSigner() {
               className={s.signerId === share?.signerId ? 'is-me' : undefined}
             >
               #{s.shareIndex} {shortId(s.signerId)}
-              {s.online ? ' · live' : ' · idle'}
+              {s.online ? ' · live' : ' · abandoned'}
               {s.signedCount ? ` · ${s.signedCount} signed` : ''}
             </li>
           ))}
