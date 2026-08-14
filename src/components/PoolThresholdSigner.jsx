@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   contributeOpen,
+  fetchPool3pStatus,
   fetchThresholdStatus,
   heartbeat,
   loadActiveShare,
@@ -26,12 +27,21 @@ function shortTicket(id) {
   return `${s.slice(0, 14)}…`;
 }
 
+function seatLabel(share) {
+  if (!share) return 'joining';
+  if (share.waitlist) return 'orbit voter';
+  if (share.role === 1) return 'd1 seat';
+  if (share.role === 2) return 'd2 seat';
+  return `slot ${share.shareIndex ?? '?'}`;
+}
+
 export default function PoolThresholdSigner() {
   const [share, setShare] = useState(null);
   const [enabled, setEnabled] = useState(true);
   const [status, setStatus] = useState(null);
+  const [pool3p, setPool3p] = useState(null);
   const [phase, setPhase] = useState('idle');
-  const [log, setLog] = useState('joining roster…');
+  const [log, setLog] = useState('joining 3P orbit…');
   const [error, setError] = useState(null);
   const [stats, setStats] = useState({ signedCount: 0 });
   const [verify, setVerify] = useState(null);
@@ -48,16 +58,26 @@ export default function PoolThresholdSigner() {
       }
       try {
         const s = await loadActiveShare();
+        const p3 = await fetchPool3pStatus().catch(() => null);
         if (!cancelled) {
           setShare(s);
-          setLog(`joined as slot ${s.shareIndex}`);
+          setPool3p(p3);
+          setLog(
+            s.waitlist
+              ? 'orbit voter — d1/d2 leased; if a holder goes idle you can claim the seat'
+              : s.role === 1
+                ? 'holding d1 (Lindell finish). Idle > 2 min reissues this seat.'
+                : s.role === 2
+                  ? 'holding d2. Idle > 2 min reissues this seat.'
+                  : `joined as slot ${s.shareIndex}`,
+          );
           setError(null);
         }
       } catch (e) {
         if (!cancelled) {
           setPhase('error');
           setError(e?.message || String(e));
-          setLog('could not join roster');
+          setLog('could not join 3P orbit');
         }
       }
     })();
@@ -70,18 +90,30 @@ export default function PoolThresholdSigner() {
     if (!share || !enabled || tickLock.current) return;
     tickLock.current = true;
     try {
-      await heartbeat(share);
-      const { status: st, results, openCount, lastVerify } = await contributeOpen(share);
+      const hb = await heartbeat(share);
+      if (hb?.orbit) {
+        setPool3p((prev) => ({ ...(prev || {}), orbit: hb.orbit, seatEpoch: hb.seatEpoch }));
+      }
+      const { status: st, pool3p: p3, results, openCount, lastVerify } =
+        await contributeOpen(share);
       if (lastVerify) setVerify(lastVerify);
-      const serverEpoch = st.signers?.epoch ?? st.epoch;
+      if (p3) setPool3p(p3);
+
       if (
-        serverEpoch != null &&
-        share.epoch != null &&
-        Number(serverEpoch) !== Number(share.epoch)
+        (st?.signers?.epoch != null &&
+          share.epoch != null &&
+          Number(st.signers.epoch) !== Number(share.epoch)) ||
+        (p3?.seatEpoch != null &&
+          share.seatEpoch != null &&
+          Number(p3.seatEpoch) !== Number(share.seatEpoch))
       ) {
         const s = await loadActiveShare();
         setShare(s);
-        setLog(`new lease · epoch ${s.epoch ?? serverEpoch}`);
+        setLog(
+          s.waitlist
+            ? `seat refreshed · now orbit voter · epoch ${p3?.seatEpoch ?? '?'}`
+            : `new ${seatLabel(s)} lease · seatEpoch ${s.seatEpoch ?? p3?.seatEpoch ?? '?'}`,
+        );
         setStatus(st);
         setError(null);
         return;
@@ -89,76 +121,70 @@ export default function PoolThresholdSigner() {
       setStatus(st);
       setError(null);
 
-      const me = (st.signers?.slots || []).find(
-        (x) => x.signerId === share.signerId,
-      );
-      const serverCount = Number(me?.signedCount ?? 0);
-      const need = st.t || st.signers?.policyT || 3;
-      const active = st.signers?.active ?? 0;
+      const liveN = p3?.orbit?.liveCount ?? hb?.orbit?.liveCount ?? 0;
+      const needN = Math.max(liveN, p3?.orbit?.orbitMin ?? 2);
 
       if (openCount === 0) {
         setPhase('online');
-        setLog(`online · ${active} running · need ${need} of ${active || need}`);
-        if (serverCount > Number(stats.signedCount || 0)) {
-          setStats(await writeStats({ signedCount: serverCount }));
-        }
+        setLog(
+          `${seatLabel(share)} · orbit ${liveN} live · n-of-n among live (need ${needN})`,
+        );
         return;
       }
 
       setPhase('signing');
       const last = results[results.length - 1] || {};
-      const fresh = results.filter((r) => r.contributed && !r.alreadyHad);
+      const fresh = results.filter(
+        (r) => (r.contributed || r.ok) && !r.alreadyHad && !r.skipped && !r.orbitOnly,
+      );
       if (fresh.length) {
         setStats(
           await writeStats({
-            signedCount: Math.max(
-              serverCount,
-              Number(stats.signedCount || 0) + fresh.length,
-            ),
+            signedCount: Number(stats.signedCount || 0) + fresh.length,
             lastTicket: last.ticketId || null,
-            lastPaid: Boolean(last.paid),
-            lastTx: last.payout?.txHash || null,
+            lastPaid: Boolean(last.paid || last.txHash),
+            lastTx: last.payout?.txHash || last.txHash || null,
             lastAt: Date.now(),
-            lastMsg: last.message || null,
+            lastMsg: last.message || last.error || null,
           }),
         );
-      } else if (serverCount > Number(stats.signedCount || 0)) {
-        setStats(await writeStats({ signedCount: serverCount }));
       }
 
-      if (last.paid) {
+      if (last.paid || last.txHash) {
         setPhase('signed');
         setLog(
-          `signed ${shortTicket(last.ticketId)} · paid ${String(last.payout?.txHash || '').slice(0, 10)}…`,
+          `3P paid ${shortTicket(last.ticketId)} · ${String(last.txHash || last.payout?.txHash || '').slice(0, 10)}…`,
+        );
+      } else if (last.orbitOnly || last.waiting) {
+        setPhase('online');
+        setLog(
+          last.waiting
+            ? `d1 waiting for d2 / orbit on ${shortTicket(last.ticketId)}`
+            : `orbit attested ${shortTicket(last.ticketId)}`,
         );
       } else {
         const skipped = results.filter((r) => r.skipped);
-        const waitingNotice = skipped.filter((r) =>
-          /no pool_release_ticket|burn attestation/i.test(r.error || ''),
-        );
-        if (waitingNotice.length && waitingNotice.length === skipped.length && !fresh.length) {
-          setPhase('online');
-          setError(null);
-          setLog('watching · no burn/release notice yet');
-        } else if (skipped.length && !fresh.length) {
+        if (skipped.length && !fresh.length) {
           setPhase('error');
           setError(skipped[0].error || 'verification failed');
-          setLog(`held share — ${skipped[0].error || 'verify failed'}`);
+          setLog(`held — ${skipped[0].error || 'verify failed'}`);
         } else {
-          setLog(
-            `signing ${shortTicket(last.ticketId)} · ${last.count || '?'}/${last.need || need}`,
-          );
+          setLog(`signing ${shortTicket(last.ticketId)} · ${seatLabel(share)}`);
         }
       }
     } catch (e) {
       const msg = e?.message || String(e);
       setPhase('error');
       setError(msg);
-      if (/EPOCH_ROTATED|share is dead|mismatch|not issued|does not own|share material/i.test(msg)) {
+      if (
+        /EPOCH_ROTATED|SEAT_ROTATED|share is dead|mismatch|not issued|does not own|share material/i.test(
+          msg,
+        )
+      ) {
         try {
           const s = await loadActiveShare();
           setShare(s);
-          setLog(`new lease · epoch ${s.epoch ?? '?'} · slot ${s.shareIndex}`);
+          setLog(`re-enrolled as ${seatLabel(s)} · seatEpoch ${s.seatEpoch ?? '?'}`);
           setPhase('online');
           setError(null);
         } catch {
@@ -167,6 +193,7 @@ export default function PoolThresholdSigner() {
       }
       try {
         setStatus(await fetchThresholdStatus(DEFAULT_POOL_API));
+        setPool3p(await fetchPool3pStatus(DEFAULT_POOL_API));
       } catch {
         /* */
       }
@@ -189,31 +216,12 @@ export default function PoolThresholdSigner() {
     setPhase(next ? 'online' : 'paused');
   };
 
-  const signers = status?.signers;
-  const issued = (signers?.slots || []).filter((s) => s.issued);
-  const live = issued.filter((s) => s.online);
-  const abandoned = issued.filter((s) => !s.online);
-  const me = issued.find((s) => share && s.signerId === share.signerId);
-  const displayCount = Math.max(
-    Number(stats.signedCount || 0),
-    Number(me?.signedCount || 0),
-  );
   const open = (status?.open || []).filter(
     (r) => !r.labDemo && !/^lab-demo-/.test(String(r.ticketId || '')),
   );
-  const need = status?.t || signers?.policyT || share?.need || 3;
-  const active = signers?.active ?? live.length;
-
-  const renderSlot = (s) => (
-    <li
-      key={s.shareIndex}
-      className={s.signerId === share?.signerId ? 'is-me' : undefined}
-    >
-      #{s.shareIndex} {shortId(s.signerId)}
-      {s.online ? ' · live' : ''}
-      {s.signedCount ? ` · ${s.signedCount} signed` : ''}
-    </li>
-  );
+  const liveOrbit = pool3p?.orbit?.live || [];
+  const liveN = pool3p?.orbit?.liveCount ?? liveOrbit.length;
+  const needN = Math.max(liveN, pool3p?.orbit?.orbitMin ?? 2);
 
   const phaseLabel =
     !share && phase === 'error'
@@ -231,9 +239,9 @@ export default function PoolThresholdSigner() {
                 : 'Paused';
 
   return (
-    <section className="panel pool-signer" aria-label="Pool threshold signer">
+    <section className="panel pool-signer" aria-label="3P pool signer">
       <div className="panel__head">
-        <h2>Pool signer</h2>
+        <h2>3P pool signer</h2>
         <button
           type="button"
           className={`btn btn--ghost${enabled ? ' is-on' : ''}`}
@@ -252,23 +260,38 @@ export default function PoolThresholdSigner() {
         <span className="pool-signer__dot" aria-hidden />
         <strong>{phaseLabel}</strong>
         <span className="pool-signer__count">
-          signed {displayCount} · need {need}/{active || need}
+          {seatLabel(share)} · orbit {liveN}/{needN}
         </span>
       </div>
 
       <p className="pool-signer__lead">
         {share ? (
           <>
-            You are <code>{shortId(share.signerId)}</code> · slot {share.shareIndex}
-            {share.epoch != null ? ` · epoch ${share.epoch}` : ''}
-            {' · '}
-            share lives in this tab only. Signs only after notice + machine + SPV tip check out.
+            You are <code>{shortId(share.signerId)}</code> · {seatLabel(share)}
+            {share.seatEpoch != null ? ` · seatEpoch ${share.seatEpoch}` : ''}
+            {'. '}
+            3P core is d_dapp + d1 + d2. Orbit is n-of-n among live tabs. Idle drops a
+            seat and reissues it — old hex dies, same pool address.
+            {share.sealOk
+              ? ' Seal checked against published P1+P2+Pdapp=Q.'
+              : ''}
+            {share.seal?.dealerSawPlaintext
+              ? ' This epoch was minted on the VPS (dealer saw plaintext).'
+              : ''}
           </>
         ) : (
-          <>Anyone with this page or the extension is a unique signer — joining…</>
+          <>Joining the 3P orbit (website or extension)…</>
         )}
       </p>
       <p className="pool-signer__meta">{log}</p>
+      {pool3p?.address ? (
+        <p className="pool-signer__meta" style={{ wordBreak: 'break-all' }}>
+          Pool {pool3p.address}
+          <br />
+          d1 {pool3p.holder1 ? shortId(pool3p.holder1) : 'vacant'} · d2{' '}
+          {pool3p.holder2 ? shortId(pool3p.holder2) : 'vacant'}
+        </p>
+      ) : null}
       {verify && (
         <p className={`pool-signer__meta${verify.ok === false ? ' is-warn' : ''}`}>
           {formatVerifyLine(verify)}
@@ -276,8 +299,7 @@ export default function PoolThresholdSigner() {
       )}
       {open.length > 0 && (
         <p className="pool-signer__meta">
-          Open:{' '}
-          {open.map((r) => `${shortTicket(r.ticketId)} ${r.count}/${r.need}`).join(' · ')}
+          Open: {open.map((r) => shortTicket(r.ticketId)).join(' · ')}
         </p>
       )}
       {stats.lastTicket && (
@@ -289,19 +311,17 @@ export default function PoolThresholdSigner() {
       )}
       {error ? <p className="dash__error">{error}</p> : null}
 
-      {live.length > 0 && (
-        <ul className="pool-signer__slots">{live.map(renderSlot)}</ul>
-      )}
-      {abandoned.length > 0 && (
-        <details className="pool-signer__history">
-          <summary>
-            Abandoned history
-            <span>{abandoned.length}</span>
-          </summary>
-          <ul className="pool-signer__slots pool-signer__slots--history">
-            {abandoned.map(renderSlot)}
-          </ul>
-        </details>
+      {liveOrbit.length > 0 && (
+        <ul className="pool-signer__slots">
+          {liveOrbit.map((id) => (
+            <li key={id} className={id === share?.signerId ? 'is-me' : undefined}>
+              {shortId(id)}
+              {id === pool3p?.holder1 ? ' · d1' : ''}
+              {id === pool3p?.holder2 ? ' · d2' : ''}
+              {id === share?.signerId ? ' · you' : ''}
+            </li>
+          ))}
+        </ul>
       )}
     </section>
   );

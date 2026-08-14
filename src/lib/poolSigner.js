@@ -1,11 +1,9 @@
 /**
- * Open roster: each website tab-origin / extension instance gets a unique
- * signerId and auto-enrolls as the next unused Shamir slot.
- * Payout policy is n-of-n among signers seen in the last ~2 minutes.
+ * Browser / extension pool signer for 3P core + orbit.
  *
- * Share material is a RAM lease only. Come online → HTTPS enroll.
- * Close the tab / miss heartbeats → coordinator reshares, old hex is dead.
- * signerId stays in storage so you get the same slot back; shareHex does not.
+ * Enroll: unique signerId joins the orbit (n-of-n among live heartbeats).
+ * Vacant d1/d2 seats are leased in RAM. Idle > lease → seat refresh (old hex dies).
+ * Full d is never on this device.
  */
 export const DEFAULT_POOL_API = 'https://cartesi-bridge.duckdns.org/api/pool';
 
@@ -33,11 +31,53 @@ function uuid() {
 
 function normalizeShare(j) {
   if (!j || typeof j !== 'object') return null;
+  const signerId = String(j.signerId || '').trim();
+  const scheme = String(j.scheme || '');
+  if (j.waitlist || Number(j.role) === 0) {
+    return {
+      scheme: scheme || 'wart-3p-ecdsa-lindell-v1',
+      role: 0,
+      waitlist: true,
+      signerId,
+      poolAddress: j.poolAddress || null,
+      message: j.message || '3P roster full',
+      source: j.source || 'enrolled',
+    };
+  }
+  if (scheme.includes('3p-ecdsa') || Number(j.role) === 1 || Number(j.role) === 2) {
+    const shareHex = String(j.userShareHex || j.shareHex || '')
+      .replace(/^0x/i, '')
+      .toLowerCase();
+    const role = Number(j.role || j.shareIndex || 0);
+    if (!/^[0-9a-f]{64}$/.test(shareHex) || (role !== 1 && role !== 2) || !signerId) {
+      return null;
+    }
+    return {
+      scheme: scheme || 'wart-3p-ecdsa-lindell-v1',
+      role,
+      shareIndex: role,
+      shareHex,
+      userShareHex: shareHex,
+      signerId,
+      poolAddress: j.poolAddress || null,
+      publicKey: j.publicKey || null,
+      paillierLambda: j.paillierLambda || null,
+      paillierMu: j.paillierMu || null,
+      paillierN: j.paillierN || null,
+      paillierG: j.paillierG || null,
+      source: j.source || 'enrolled',
+      waitlist: false,
+      message: j.message || null,
+      seatEpoch: j.seatEpoch == null ? null : Number(j.seatEpoch),
+      leaseMs: Number(j.leaseMs || 120000),
+      orbit: j.orbit || null,
+      seal: j.seal || null,
+    };
+  }
   const shareHex = String(j.shareHex || '')
     .replace(/^0x/i, '')
     .toLowerCase();
   const shareIndex = Number(j.shareIndex);
-  const signerId = String(j.signerId || '').trim();
   if (!/^[0-9a-f]{64}$/.test(shareHex) || !Number.isFinite(shareIndex) || !signerId) {
     return null;
   }
@@ -158,6 +198,12 @@ export async function fetchThresholdStatus(api = DEFAULT_POOL_API) {
   return withRetry(() => poolGet(api, 'threshold=1'));
 }
 
+export async function fetchPool3pStatus(api = DEFAULT_POOL_API) {
+  return withRetry(() =>
+    poolPost(api, { action: 'pool3p_status' }),
+  );
+}
+
 export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
   const r = await withRetry(() =>
     poolPost(api, {
@@ -168,6 +214,16 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
   );
   const share = normalizeShare({ ...r, source: 'enrolled' });
   if (!share) throw new Error('enroll returned no share');
+  if (!share.waitlist && r.seal && (share.role === 1 || share.role === 2)) {
+    const { verifyShareSeal } = await import('./pool3pClient.js');
+    verifyShareSeal({
+      shareHex: share.userShareHex || share.shareHex,
+      role: share.role,
+      seal: r.seal,
+    });
+    share.seal = r.seal;
+    share.sealOk = true;
+  }
   liveShare = share;
   await storageSet(ID_KEY, share.signerId);
   await storageRemove(SHARE_KEY);
@@ -189,6 +245,22 @@ export function dropLiveShare() {
 }
 
 export async function heartbeat(share, api = DEFAULT_POOL_API) {
+  if (share?.scheme?.includes('3p-ecdsa') || share?.waitlist) {
+    const r = await withRetry(() =>
+      poolPost(api, {
+        action: 'pool3p_heartbeat',
+        signerId: share.signerId,
+        seatEpoch: share.seatEpoch,
+      }),
+    );
+    if (r.seatRotated) {
+      liveShare = null;
+      const err = new Error('SEAT_ROTATED: d1/d2 was reissued — re-enroll for the new lease');
+      err.code = 'SEAT_ROTATED';
+      throw err;
+    }
+    return r;
+  }
   const r = await withRetry(() =>
     poolPost(api, {
       action: 'threshold_heartbeat',
@@ -211,8 +283,55 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
   return r;
 }
 
+const k1ByTicket = new Map();
+
+async function sign3pAsRole1(share, req, api) {
+  const { clientSignRound1, clientSignFinish } = await import('./pool3pClient.js');
+  let k1 = k1ByTicket.get(req.ticketId);
+  if (!k1) {
+    const prep = await poolPost(api, {
+      action: 'pool3p_prepare',
+      ticketId: req.ticketId,
+      toAddress: req.toAddress,
+      amountE8: req.amountE8,
+    });
+    const rnd = clientSignRound1();
+    k1 = { ...rnd, hashHex: prep.hashHex };
+    k1ByTicket.set(req.ticketId, k1);
+    await poolPost(api, {
+      action: 'pool3p_r1',
+      ticketId: req.ticketId,
+      signerId: share.signerId,
+      R1Hex: rnd.R1Hex,
+      hashHex: prep.hashHex,
+      amountE8: req.amountE8,
+      toAddress: req.toAddress,
+    });
+  }
+  const st = await poolPost(api, { action: 'pool3p_ticket', ticketId: req.ticketId });
+  if (!st.hasPartial) {
+    return { ok: true, waiting: true, status: st.status, ticketId: req.ticketId };
+  }
+  const fin = clientSignFinish({
+    k1Hex: k1.k1Hex,
+    rHex: st.rHex,
+    ciphertext: st.ciphertext,
+    hashHex: k1.hashHex,
+    clientSecret: share,
+  });
+  const paid = await poolPost(api, {
+    action: 'pool3p_submit',
+    ticketId: req.ticketId,
+    signature65: fin.signature65,
+    hashHex: k1.hashHex,
+  });
+  k1ByTicket.delete(req.ticketId);
+  return paid;
+}
+
 export async function contributeOpen(share, api = DEFAULT_POOL_API) {
   const st = await fetchThresholdStatus(api);
+  const p3 = await fetchPool3pStatus(api).catch(() => null);
   const open = (st.open || []).filter(
     (r) => r.status === 'open' || r.status === 'failed',
   );
@@ -231,6 +350,7 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
     }
     return {
       status: st,
+      pool3p: p3,
       results,
       openCount: 0,
       ignoredOpen: open.length,
@@ -244,7 +364,7 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
         ticketId: req.ticketId,
         toAddress: req.toAddress,
         amountE8: req.amountE8,
-        poolAddress: st.signers?.poolAddress || share.poolAddress,
+        poolAddress: share.poolAddress || p3?.address || st.signers?.poolAddress,
         labDemo: Boolean(req.labDemo),
       });
       lastVerify = verify;
@@ -267,25 +387,48 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
       continue;
     }
     try {
-      const r = await withRetry(() =>
-        poolPost(api, {
-          action: 'threshold_contribute',
-          ticketId: req.ticketId,
-          shareIndex: share.shareIndex,
-          shareHex: share.shareHex,
+      let r;
+      if (share.scheme?.includes('3p-ecdsa') || share.waitlist) {
+        await poolPost(api, {
+          action: 'pool3p_orbit_attest',
           signerId: share.signerId,
-          verification: verify.attestation,
-        }),
-      );
+          ticketId: req.ticketId,
+        }).catch(() => null);
+      }
+      if (share.waitlist) {
+        r = { ok: true, orbitOnly: true, ticketId: req.ticketId };
+      } else if (share.scheme?.includes('3p-ecdsa') && share.role === 2) {
+        r = await withRetry(() =>
+          poolPost(api, {
+            action: 'pool3p_d2',
+            ticketId: req.ticketId,
+            signerId: share.signerId,
+            d2Hex: share.userShareHex || share.shareHex,
+          }),
+        );
+      } else if (share.scheme?.includes('3p-ecdsa') && share.role === 1) {
+        r = await sign3pAsRole1(share, req, api);
+      } else {
+        r = await withRetry(() =>
+          poolPost(api, {
+            action: 'threshold_contribute',
+            ticketId: req.ticketId,
+            shareIndex: share.shareIndex,
+            shareHex: share.shareHex,
+            signerId: share.signerId,
+            verification: verify.attestation,
+          }),
+        );
+      }
       results.push({ ticketId: req.ticketId, ...r, verify });
     } catch (e) {
-      if (isEpochDead(e)) {
+      if (isEpochDead(e) || e?.code === 'SEAT_ROTATED') {
         liveShare = null;
       }
       throw e;
     }
   }
-  return { status: st, results, openCount: actionable.length, lastVerify };
+  return { status: st, pool3p: p3, results, openCount: actionable.length, lastVerify };
 }
 
 export async function readEnabled() {
