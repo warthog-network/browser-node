@@ -91,32 +91,34 @@ export default function PoolThresholdSigner() {
     tickLock.current = true;
     try {
       const hb = await heartbeat(share);
-      if (hb?.orbit) {
-        setPool3p((prev) => ({ ...(prev || {}), orbit: hb.orbit, seatEpoch: hb.seatEpoch }));
+      if (hb?.share && hb.share !== share) {
+        setShare(hb.share);
       }
+      if (hb?.orbit || hb?.holders || hb?.holder1 || hb?.seatEpoch != null) {
+        setPool3p((prev) => ({
+          ...(prev || {}),
+          orbit: hb.orbit || prev?.orbit,
+          seatEpoch: hb.seatEpoch ?? prev?.seatEpoch,
+          holder1: hb.holder1 ?? prev?.holder1,
+          holder2: hb.holder2 ?? prev?.holder2,
+          holders: hb.holders || prev?.holders,
+        }));
+      }
+      const active = hb?.share || share;
       const { status: st, pool3p: p3, results, openCount, lastVerify } =
-        await contributeOpen(share);
+        await contributeOpen(active);
       if (lastVerify) setVerify(lastVerify);
-      if (p3) setPool3p(p3);
-
-      if (
-        (st?.signers?.epoch != null &&
-          share.epoch != null &&
-          Number(st.signers.epoch) !== Number(share.epoch)) ||
-        (p3?.seatEpoch != null &&
-          share.seatEpoch != null &&
-          Number(p3.seatEpoch) !== Number(share.seatEpoch))
-      ) {
-        const s = await loadActiveShare();
-        setShare(s);
+      if (p3) {
+        setPool3p((prev) => ({
+          ...(prev || {}),
+          ...p3,
+          holders: p3.holders || hb?.holders || prev?.holders,
+        }));
+      }
+      if (hb?.shareUpdated) {
         setLog(
-          s.waitlist
-            ? `seat refreshed · now orbit voter · epoch ${p3?.seatEpoch ?? '?'}`
-            : `new ${seatLabel(s)} lease · seatEpoch ${s.seatEpoch ?? p3?.seatEpoch ?? '?'}`,
+          `epoch ${hb.seatEpoch} · new ${seatLabel(hb.share || active)} hex applied (old share dropped)`,
         );
-        setStatus(st);
-        setError(null);
-        return;
       }
       setStatus(st);
       setError(null);
@@ -126,9 +128,11 @@ export default function PoolThresholdSigner() {
 
       if (openCount === 0) {
         setPhase('online');
-        setLog(
-          `${seatLabel(share)} · orbit ${liveN} live · n-of-n among live (need ${needN})`,
-        );
+        if (!hb?.shareUpdated) {
+          setLog(
+            `${seatLabel(active)} · orbit ${liveN} live · n-of-n among live (need ${needN})`,
+          );
+        }
         return;
       }
 
@@ -169,7 +173,7 @@ export default function PoolThresholdSigner() {
           setError(skipped[0].error || 'verification failed');
           setLog(`held — ${skipped[0].error || 'verify failed'}`);
         } else {
-          setLog(`signing ${shortTicket(last.ticketId)} · ${seatLabel(share)}`);
+          setLog(`signing ${shortTicket(last.ticketId)} · ${seatLabel(active)}`);
         }
       }
     } catch (e) {
@@ -184,7 +188,7 @@ export default function PoolThresholdSigner() {
         try {
           const s = await loadActiveShare();
           setShare(s);
-          setLog(`re-enrolled as ${seatLabel(s)} · seatEpoch ${s.seatEpoch ?? '?'}`);
+          setLog(`rejoined as ${seatLabel(s)} · seatEpoch ${s.seatEpoch ?? '?'}`);
           setPhase('online');
           setError(null);
         } catch {
@@ -267,29 +271,67 @@ export default function PoolThresholdSigner() {
       <p className="pool-signer__lead">
         {share ? (
           <>
-            You are <code>{shortId(share.signerId)}</code> · {seatLabel(share)}
-            {share.seatEpoch != null ? ` · seatEpoch ${share.seatEpoch}` : ''}
-            {'. '}
-            3P core is d_dapp + d1 + d2. Orbit is n-of-n among live tabs. Idle drops a
-            seat and reissues it — old hex dies, same pool address.
-            {share.sealOk
-              ? ' Seal checked against published P1+P2+Pdapp=Q.'
-              : ''}
-            {share.seal?.dealerSawPlaintext
-              ? ' This epoch was minted on the VPS (dealer saw plaintext).'
-              : ''}
+            You are <code>{shortId(share.signerId)}</code>
+            {share.seatEpoch != null ? ` · epoch ${share.seatEpoch}` : ''}.
+            Epoch change pushes a new d1/d2 to the same holders — this tab drops the
+            old hex itself, no refresh.
+            {share.sealOk ? ' Seal ok.' : ''}
           </>
         ) : (
           <>Joining the 3P orbit (website or extension)…</>
         )}
       </p>
+
+      <div className="pool-signer__seats" aria-label="d1 and d2 holders">
+        <div
+          className={`pool-signer__seat${share?.role === 1 ? ' is-you' : ''}${
+            pool3p?.holder1 ? ' is-held' : ''
+          }`}
+        >
+          <span className="pool-signer__seat-k">d1</span>
+          <strong>
+            {share?.role === 1
+              ? 'YOU hold this seat'
+              : pool3p?.holder1
+                ? shortId(pool3p.holder1)
+                : 'vacant'}
+          </strong>
+          <span>
+            {share?.role === 1
+              ? 'Lindell finish · persistent'
+              : pool3p?.holder1
+                ? 'assigned'
+                : 'waiting for a browser'}
+          </span>
+        </div>
+        <div
+          className={`pool-signer__seat${share?.role === 2 ? ' is-you' : ''}${
+            pool3p?.holder2 ? ' is-held' : ''
+          }`}
+        >
+          <span className="pool-signer__seat-k">d2</span>
+          <strong>
+            {share?.role === 2
+              ? 'YOU hold this seat'
+              : pool3p?.holder2
+                ? shortId(pool3p.holder2)
+                : 'vacant'}
+          </strong>
+          <span>
+            {share?.role === 2
+              ? 'additive share · persistent'
+              : pool3p?.holder2
+                ? 'assigned'
+                : 'waiting for a browser'}
+          </span>
+        </div>
+      </div>
+
       <p className="pool-signer__meta">{log}</p>
       {pool3p?.address ? (
         <p className="pool-signer__meta" style={{ wordBreak: 'break-all' }}>
           Pool {pool3p.address}
-          <br />
-          d1 {pool3p.holder1 ? shortId(pool3p.holder1) : 'vacant'} · d2{' '}
-          {pool3p.holder2 ? shortId(pool3p.holder2) : 'vacant'}
+          {pool3p.seatEpoch != null ? ` · epoch ${pool3p.seatEpoch}` : ''}
         </p>
       ) : null}
       {verify && (
@@ -311,18 +353,21 @@ export default function PoolThresholdSigner() {
       )}
       {error ? <p className="dash__error">{error}</p> : null}
 
-      {liveOrbit.length > 0 && (
-        <ul className="pool-signer__slots">
-          {liveOrbit.map((id) => (
+      <ul className="pool-signer__slots" aria-label="live orbit">
+        {liveOrbit.length === 0 ? (
+          <li>No live orbit yet — this tab will appear after the first heartbeat.</li>
+        ) : (
+          liveOrbit.map((id) => (
             <li key={id} className={id === share?.signerId ? 'is-me' : undefined}>
               {shortId(id)}
-              {id === pool3p?.holder1 ? ' · d1' : ''}
-              {id === pool3p?.holder2 ? ' · d2' : ''}
+              {id === pool3p?.holder1 ? ' · d1 holder' : ''}
+              {id === pool3p?.holder2 ? ' · d2 holder' : ''}
+              {id !== pool3p?.holder1 && id !== pool3p?.holder2 ? ' · orbit' : ''}
               {id === share?.signerId ? ' · you' : ''}
             </li>
-          ))}
-        </ul>
-      )}
+          ))
+        )}
+      </ul>
     </section>
   );
 }

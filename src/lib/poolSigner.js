@@ -244,6 +244,33 @@ export function dropLiveShare() {
   liveShare = null;
 }
 
+async function applyIncomingShare(raw, prev) {
+  if (!raw || raw.waitlist || (Number(raw.role) !== 1 && Number(raw.role) !== 2)) {
+    return null;
+  }
+  const share = normalizeShare({ ...raw, source: raw.source || 'heartbeat' });
+  if (!share || share.waitlist) return null;
+  if (raw.seal && (share.role === 1 || share.role === 2)) {
+    try {
+      const { verifyShareSeal } = await import('./pool3pClient.js');
+      verifyShareSeal({
+        shareHex: share.userShareHex || share.shareHex,
+        role: share.role,
+        seal: raw.seal,
+      });
+      share.seal = raw.seal;
+      share.sealOk = true;
+    } catch {
+      share.seal = raw.seal;
+      share.sealOk = false;
+    }
+  }
+  // Squash previous hex in RAM — do not keep old d1/d2 after an epoch.
+  liveShare = share;
+  if (prev?.signerId) await storageSet(ID_KEY, prev.signerId);
+  return share;
+}
+
 export async function heartbeat(share, api = DEFAULT_POOL_API) {
   if (share?.scheme?.includes('3p-ecdsa') || share?.waitlist) {
     const r = await withRetry(() =>
@@ -253,13 +280,23 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
         seatEpoch: share.seatEpoch,
       }),
     );
-    if (r.seatRotated) {
-      liveShare = null;
-      const err = new Error('SEAT_ROTATED: d1/d2 was reissued — re-enroll for the new lease');
-      err.code = 'SEAT_ROTATED';
-      throw err;
+    let next = share;
+    if (r.share) {
+      const applied = await applyIncomingShare(r.share, share);
+      if (applied) next = applied;
+    } else if ((share.role === 1 || share.role === 2) && Number(r.role || 0) === 0) {
+      next = {
+        scheme: share.scheme || 'wart-3p-ecdsa-lindell-v1',
+        role: 0,
+        waitlist: true,
+        signerId: share.signerId,
+        poolAddress: share.poolAddress || null,
+        message: 'Seat released — orbit voter until a seat is free',
+        source: 'demoted',
+      };
+      liveShare = next;
     }
-    return r;
+    return { ...r, share: next };
   }
   const r = await withRetry(() =>
     poolPost(api, {
