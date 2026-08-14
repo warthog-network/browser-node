@@ -273,9 +273,13 @@ export default function PoolThresholdSigner() {
           <>
             You are <code>{shortId(share.signerId)}</code>
             {share.seatEpoch != null ? ` · epoch ${share.seatEpoch}` : ''}.
-            Epoch change pushes a new d1/d2 to the same holders — this tab drops the
-            old hex itself, no refresh.
+            {share.clientBorn || pool3p?.clientBorn
+              ? ' You are a dealer: this tab birthed its share. VPS has d_dapp only.'
+              : ' Epoch change pushes a new d1/d2 to the same holders.'}
             {share.sealOk ? ' Seal ok.' : ''}
+            {share.seal && share.seal.dealerSawPlaintext === false
+              ? ' Seal: dealerSawPlaintext=false.'
+              : ''}
           </>
         ) : (
           <>Joining the 3P orbit (website or extension)…</>
@@ -298,10 +302,12 @@ export default function PoolThresholdSigner() {
           </strong>
           <span>
             {share?.role === 1
-              ? 'Lindell finish · persistent'
+              ? share.clientBorn
+                ? 'dealer · hex only in this tab'
+                : 'Lindell finish'
               : pool3p?.holder1
                 ? 'assigned'
-                : 'waiting for a browser'}
+                : 'waiting for a browser to birth d1'}
           </span>
         </div>
         <div
@@ -319,10 +325,12 @@ export default function PoolThresholdSigner() {
           </strong>
           <span>
             {share?.role === 2
-              ? 'additive share · persistent'
+              ? share.clientBorn
+                ? 'dealer · hex only in this tab'
+                : 'additive share'
               : pool3p?.holder2
                 ? 'assigned'
-                : 'waiting for a browser'}
+                : 'waiting for a browser to birth d2'}
           </span>
         </div>
       </div>
@@ -330,8 +338,10 @@ export default function PoolThresholdSigner() {
       <p className="pool-signer__meta">{log}</p>
       {pool3p?.address ? (
         <p className="pool-signer__meta" style={{ wordBreak: 'break-all' }}>
-          Pool {pool3p.address}
+          Pool {pool3p.address || 'pending both births'}
+          {pool3p.clientBorn ? ' · client-born' : ''}
           {pool3p.seatEpoch != null ? ` · epoch ${pool3p.seatEpoch}` : ''}
+          {pool3p.orbitVpsId ? ` · 4th ${shortId(pool3p.orbitVpsId)}` : ''}
         </p>
       ) : null}
       {verify && (

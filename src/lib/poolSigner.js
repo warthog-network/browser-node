@@ -212,9 +212,52 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
       role: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
     }),
   );
+  if (r.needBirth && (r.role === 1 || r.role === 2)) {
+    const cached = readBornCache(signerId, r.role);
+    if (cached?.userShareHex) {
+      liveShare = cached;
+      return cached;
+    }
+    const born = await birthAndUploadSeat(signerId, r.role, api, r);
+    writeBornCache(born);
+    liveShare = born;
+    await storageSet(ID_KEY, born.signerId);
+    await storageRemove(SHARE_KEY);
+    return born;
+  }
+  if (r.clientBorn && (r.role === 1 || r.role === 2) && !r.needBirth) {
+    const cached = readBornCache(signerId, r.role);
+    if (cached?.userShareHex) {
+      liveShare = { ...cached, ...r, userShareHex: cached.userShareHex, shareHex: cached.userShareHex, clientBorn: true, waitlist: false };
+      return liveShare;
+    }
+    const recovered = await tryRecoverFromPack(signerId, r.role, api, r);
+    if (recovered) {
+      writeBornCache(recovered);
+      liveShare = recovered;
+      return recovered;
+    }
+  }
+  if (r.clientBorn && (r.role === 1 || r.role === 2) && liveShare?.role === r.role && liveShare.userShareHex) {
+    liveShare = {
+      ...liveShare,
+      ...normalizeShare({
+        ...r,
+        userShareHex: liveShare.userShareHex,
+        shareHex: liveShare.userShareHex,
+        paillierLambda: liveShare.paillierLambda,
+        paillierMu: liveShare.paillierMu,
+        paillierN: liveShare.paillierN || r.paillierN,
+        paillierG: liveShare.paillierG || r.paillierG,
+        source: 'client-born',
+      }),
+      clientBorn: true,
+    };
+    return liveShare;
+  }
   const share = normalizeShare({ ...r, source: 'enrolled' });
   if (!share) throw new Error('enroll returned no share');
-  if (!share.waitlist && r.seal && (share.role === 1 || share.role === 2)) {
+  if (!share.waitlist && r.seal && (share.role === 1 || share.role === 2) && (share.userShareHex || share.shareHex)) {
     const { verifyShareSeal } = await import('./pool3pClient.js');
     verifyShareSeal({
       shareHex: share.userShareHex || share.shareHex,
@@ -228,6 +271,198 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
   await storageSet(ID_KEY, share.signerId);
   await storageRemove(SHARE_KEY);
   return share;
+}
+
+async function birthAndUploadSeat(signerId, role, api, hint) {
+  const { makeClientSeat } = await import('./pool3pClient.js');
+  const seat = makeClientSeat(role);
+  const body = {
+    action: 'pool3p_birth',
+    signerId,
+    role,
+    P: seat.P,
+  };
+  if (Number(role) === 1) {
+    const { generateRandomKeys } = await import('paillier-bigint');
+    const { publicKey: pk, privateKey: sk } = await generateRandomKeys(1024);
+    const enc = pk.encrypt(
+      BigInt('0x' + String(seat.userShareHex).replace(/^0x/i, '')),
+    );
+    body.encD1 = enc.toString();
+    body.paillierN = pk.n.toString();
+    body.paillierG = pk.g.toString();
+    seat.paillierLambda = sk.lambda.toString();
+    seat.paillierMu = sk.mu.toString();
+    seat.paillierN = pk.n.toString();
+    seat.paillierG = pk.g.toString();
+  }
+  const ack = await poolPost(api, body);
+  const share = {
+    scheme: 'wart-3p-ecdsa-lindell-v1',
+    role: Number(role),
+    shareIndex: Number(role),
+    shareHex: seat.userShareHex,
+    userShareHex: seat.userShareHex,
+    signerId,
+    poolAddress: ack.address || hint.poolAddress || null,
+    publicKey: ack.publicKey || hint.publicKey || null,
+    source: 'client-born',
+    waitlist: false,
+    clientBorn: true,
+    seatEpoch: ack.seal?.seatEpoch ?? 0,
+    seal: ack.seal || null,
+    paillierLambda: seat.paillierLambda || null,
+    paillierMu: seat.paillierMu || null,
+    paillierN: seat.paillierN || null,
+    paillierG: seat.paillierG || null,
+    message: ack.ready
+      ? `d${role} born — pool address ready`
+      : `d${role} born — waiting for the other seat`,
+  };
+  try {
+    await packNextSeat(share, api);
+  } catch (e) {
+    share.message = `${share.message} · pack later: ${e.message || e}`;
+  }
+  writeBornCache(share);
+  return share;
+}
+
+function bornCacheKey(signerId, role) {
+  return `wart.poolSigner.born.${signerId}.${role}`;
+}
+
+function readBornCache(signerId, role) {
+  try {
+    const raw = sessionStorage.getItem(bornCacheKey(signerId, role));
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeBornCache(share) {
+  if (!share?.signerId || !share.userShareHex) return;
+  try {
+    sessionStorage.setItem(bornCacheKey(share.signerId, share.role), JSON.stringify(share));
+  } catch {
+    /* */
+  }
+}
+
+async function tryRecoverFromPack(signerId, role, api, hint) {
+  try {
+    const pack = await poolPost(api, {
+      action: 'pool3p_preshare_collect',
+      signerId,
+      role,
+    });
+    if (!pack?.shares || pack.shares.length < (pack.t || 2)) return null;
+    const hex = shamirCombineLocal(pack.shares);
+    if (!hex) return null;
+    return {
+      scheme: 'wart-3p-ecdsa-lindell-v1',
+      role: Number(role),
+      shareIndex: Number(role),
+      shareHex: hex,
+      userShareHex: hex,
+      signerId,
+      clientBorn: true,
+      source: 'orbit-reconstruct',
+      waitlist: false,
+      poolAddress: hint.poolAddress || null,
+      publicKey: hint.publicKey || null,
+      message: `d${role} reconstructed from orbit pack`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function shamirCombineLocal(shares) {
+  const n = BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141');
+  const pts = shares.map((s) => ({ x: BigInt(String(s.x)), y: BigInt('0x' + String(s.y).replace(/^0x/i, '')) }));
+  const invN = (a) => {
+    let b = ((a % n) + n) % n;
+    let e = n - 2n;
+    let r = 1n;
+    while (e > 0n) {
+      if (e & 1n) r = (r * b) % n;
+      b = (b * b) % n;
+      e >>= 1n;
+    }
+    return r;
+  };
+  let acc = 0n;
+  for (let i = 0; i < pts.length; i++) {
+    let num = 1n;
+    let den = 1n;
+    for (let j = 0; j < pts.length; j++) {
+      if (i === j) continue;
+      num = (num * ((n - (pts[j].x % n)) % n)) % n;
+      den = (den * ((((pts[i].x - pts[j].x) % n) + n) % n)) % n;
+    }
+    acc = (acc + pts[i].y * num * invN(den)) % n;
+  }
+  return acc.toString(16).padStart(64, '0');
+}
+
+async function packNextSeat(share, api) {
+  const st = await fetchPool3pStatus(api).catch(() => null);
+  const live = st?.orbit?.live || [];
+  const other = Number(share.role) === 1 ? st?.holder2 : st?.holder1;
+  const targets = live.filter((id) => id && id !== share.signerId && id !== other);
+  if (targets.length < 2) return null;
+  const { makeClientSeat } = await import('./pool3pClient.js');
+  const next = makeClientSeat(share.role);
+  const n = BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141');
+  const secret = BigInt('0x' + share.userShareHex);
+  const delta = (BigInt('0x' + next.userShareHex) - secret + n * 2n) % n;
+  const t = 2;
+  const shares = await shamirSplitLocal(next.userShareHex, targets, t);
+  await poolPost(api, {
+    action: 'pool3p_preshare_put',
+    signerId: share.signerId,
+    role: share.role,
+    t,
+    Pnext: next.P,
+    delta: delta.toString(16).padStart(64, '0'),
+    shares,
+  });
+  share.nextPacked = true;
+  share.packTargets = targets;
+  return targets;
+}
+
+async function shamirSplitLocal(secretHex, ids, t) {
+  const { sha256 } = await import('@noble/hashes/sha256');
+  const n = BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141');
+  const secret = BigInt('0x' + String(secretHex).replace(/^0x/i, ''));
+  const coeffs = [secret];
+  for (let i = 1; i < t; i++) {
+    const b = new Uint8Array(32);
+    crypto.getRandomValues(b);
+    let a = 0n;
+    for (const x of b) a = (a << 8n) | BigInt(x);
+    coeffs.push(a % n);
+  }
+  const xOf = (id) => {
+    const h = sha256(new TextEncoder().encode(String(id)));
+    const hex = [...h].map((x) => x.toString(16).padStart(2, '0')).join('');
+    let x = BigInt('0x' + hex) % n;
+    if (x === 0n) x = 1n;
+    return x;
+  };
+  return ids.map((id) => {
+    const x = xOf(id);
+    let y = 0n;
+    let p = 1n;
+    for (const a of coeffs) {
+      y = (y + a * p) % n;
+      p = (p * x) % n;
+    }
+    return { id, x: x.toString(), y: y.toString(16).padStart(64, '0') };
+  });
 }
 
 export async function loadActiveShare(api = DEFAULT_POOL_API) {
@@ -247,6 +482,17 @@ export function dropLiveShare() {
 async function applyIncomingShare(raw, prev) {
   if (!raw || raw.waitlist || (Number(raw.role) !== 1 && Number(raw.role) !== 2)) {
     return null;
+  }
+  if (raw.clientBorn && !raw.userShareHex && !raw.shareHex && prev?.userShareHex) {
+    raw = {
+      ...raw,
+      userShareHex: prev.userShareHex,
+      shareHex: prev.userShareHex,
+      paillierLambda: prev.paillierLambda,
+      paillierMu: prev.paillierMu,
+      paillierN: prev.paillierN,
+      paillierG: prev.paillierG,
+    };
   }
   const share = normalizeShare({ ...raw, source: raw.source || 'heartbeat' });
   if (!share || share.waitlist) return null;
