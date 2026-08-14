@@ -527,6 +527,10 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
       }),
     );
     let next = share;
+    if ((r.share?.needBirth || r.needBirth) && (Number(r.role || r.share?.role) === 1 || Number(r.role || r.share?.role) === 2) && !share.userShareHex) {
+      next = await enrollSigner(share.signerId, api);
+      return { ...r, share: next };
+    }
     if (r.share) {
       const applied = await applyIncomingShare(r.share, share);
       if (applied) next = applied;
