@@ -1,9 +1,9 @@
 {
   "name": "warthog-browser-node",
   "type": "module",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "private": true,
-  "description": "Warthog full node in the browser (WASM + pthreads) — Astro + Netlify",
+  "description": "Warthog full node in the browser (WASM + pthreads) \u2014 Astro + Netlify",
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",

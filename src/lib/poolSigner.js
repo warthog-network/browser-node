@@ -432,18 +432,20 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
           ticketId: req.ticketId,
         }).catch(() => null);
       }
-      if (share.waitlist) {
+      const role = Number(share.role || 0);
+      if (share.waitlist || role === 0) {
         r = { ok: true, orbitOnly: true, ticketId: req.ticketId };
-      } else if (share.scheme?.includes('3p-ecdsa') && share.role === 2) {
-        r = await withRetry(() =>
-          poolPost(api, {
-            action: 'pool3p_d2',
-            ticketId: req.ticketId,
-            signerId: share.signerId,
-            d2Hex: share.userShareHex || share.shareHex,
-          }),
-        );
-      } else if (share.scheme?.includes('3p-ecdsa') && share.role === 1) {
+      } else if (share.scheme?.includes('3p-ecdsa') && role === 2) {
+        const d2 = await poolPost(api, {
+          action: 'pool3p_d2',
+          ticketId: req.ticketId,
+          signerId: share.signerId,
+          d2Hex: share.userShareHex || share.shareHex,
+        });
+        r = d2.skipped
+          ? { ok: true, orbitOnly: true, ticketId: req.ticketId, note: d2.error }
+          : d2;
+      } else if (share.scheme?.includes('3p-ecdsa') && role === 1) {
         r = await sign3pAsRole1(share, req, api);
       } else {
         r = await withRetry(() =>
@@ -459,6 +461,16 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
       }
       results.push({ ticketId: req.ticketId, ...r, verify });
     } catch (e) {
+      const msg = e?.message || String(e);
+      if (/must come from the current d[12] holder|no d[12] holder/i.test(msg)) {
+        results.push({
+          ticketId: req.ticketId,
+          ok: true,
+          orbitOnly: true,
+          error: msg,
+        });
+        continue;
+      }
       if (isEpochDead(e) || e?.code === 'SEAT_ROTATED') {
         liveShare = null;
       }
