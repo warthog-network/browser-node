@@ -32,7 +32,13 @@ function invScalar(a) {
 }
 
 function hexToScalar(hex) {
-  return modN(BigInt('0x' + String(hex).replace(/^0x/i, '')));
+  const h = String(hex ?? '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+  if (!/^[0-9a-f]+$/.test(h)) {
+    throw new Error(`bad hex scalar (${String(hex).slice(0, 18) || 'empty'})`);
+  }
+  return modN(BigInt('0x' + h));
 }
 
 function scalarToHex(s) {
@@ -121,6 +127,9 @@ export function clientSignRound1() {
 }
 
 export function clientSignFinish({ k1Hex, rHex, ciphertext, hashHex, clientSecret }) {
+  if (!clientSecret?.paillierN || !clientSecret?.paillierLambda) {
+    throw new Error('d1 seat missing Paillier key — re-enroll this tab as d1');
+  }
   const k1 = hexToScalar(k1Hex);
   const r = hexToScalar(rHex);
   const pub = new PublicKey(BigInt(clientSecret.paillierN), BigInt(clientSecret.paillierG));
@@ -129,22 +138,25 @@ export function clientSignFinish({ k1Hex, rHex, ciphertext, hashHex, clientSecre
     BigInt(clientSecret.paillierMu),
     pub,
   );
-  const pt = sk.decrypt(BigInt(ciphertext));
+  const pt = sk.decrypt(BigInt(String(ciphertext).replace(/^0x/i, '')));
   let s = modN(invScalar(k1) * modN(pt));
   if (s > CURVE_N / 2n) s = CURVE_N - s;
 
   const rPad = scalarToHex(r);
   const sPad = scalarToHex(s);
-  const msgHex = String(hashHex).replace(/^0x/i, '');
-  const msg = new Uint8Array(msgHex.length / 2);
-  for (let i = 0; i < msg.length; i++) {
+  const msgHex = String(hashHex || '').replace(/^0x/i, '');
+  if (!/^[0-9a-f]{64}$/i.test(msgHex)) {
+    throw new Error('d1 finish missing hashHex — wait for prepare');
+  }
+  const msg = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
     msg[i] = parseInt(msgHex.slice(i * 2, i * 2 + 2), 16);
   }
   const expectPub = String(clientSecret.publicKey || '')
     .replace(/^0x/i, '')
     .toLowerCase();
 
-  let recid = 0;
+  let recid = null;
   for (let rec = 0; rec < 4; rec++) {
     try {
       const sig = new secp256k1.Signature(r, s).addRecoveryBit(rec);
@@ -158,6 +170,11 @@ export function clientSignFinish({ k1Hex, rHex, ciphertext, hashHex, clientSecre
     } catch {
       /* */
     }
+  }
+  if (recid == null) {
+    throw new Error(
+      '3P recovery failed — signature does not match pool pubkey (do not submit v=0)',
+    );
   }
   return {
     signature65: rPad + sPad + recid.toString(16).padStart(2, '0'),

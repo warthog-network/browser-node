@@ -326,6 +326,7 @@ async function sign3pAsRole1(share, req, api) {
   const { clientSignRound1, clientSignFinish } = await import('./pool3pClient.js');
   let k1 = k1ByTicket.get(req.ticketId);
   if (!k1) {
+    // Lost RAM k1 (tab reload). Re-issue R1 so Lindell can rerun with a key we hold.
     const prep = await poolPost(api, {
       action: 'pool3p_prepare',
       ticketId: req.ticketId,
@@ -369,9 +370,17 @@ async function sign3pAsRole1(share, req, api) {
 export async function contributeOpen(share, api = DEFAULT_POOL_API) {
   const st = await fetchThresholdStatus(api);
   const p3 = await fetchPool3pStatus(api).catch(() => null);
-  const open = (st.open || []).filter(
-    (r) => r.status === 'open' || r.status === 'failed',
-  );
+  const seen = new Set();
+  const open = [];
+  for (const r of [...(p3?.open || []), ...(st.open || [])]) {
+    const id = String(r?.ticketId || '');
+    if (!id || seen.has(id)) continue;
+    if (r.status !== 'open' && r.status !== 'failed' && r.status !== 'wait_r1' && r.status !== 'wait_d2' && r.status !== 'partial' && r.status !== 'ready') {
+      continue;
+    }
+    seen.add(id);
+    open.push({ ...r, status: 'open' });
+  }
   // Lab-demo tickets have no burn notice — they are not redeem attempts.
   const actionable = open.filter(
     (r) => !r.labDemo && !/^lab-demo-/.test(String(r.ticketId || '')),
