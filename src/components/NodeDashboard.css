@@ -135,6 +135,18 @@
   color: var(--warn, #e8b84a);
 }
 
+.pool-signer__rotate {
+  margin: 0.4rem 0 0;
+  padding: 0.28rem 0.45rem;
+  border-radius: 6px;
+  background: rgba(253, 185, 19, 0.1);
+  color: var(--text, inherit);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
 .pool-signer__slots {
   list-style: none;
   margin: 0.55rem 0 0;

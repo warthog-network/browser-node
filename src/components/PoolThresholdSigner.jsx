@@ -50,6 +50,31 @@ function e8ToWart(e8) {
   return (n / 1e8).toFixed(2).replace(/\.00$/, '');
 }
 
+/** Lab Cartesi epoch is 3s. Keep the extension clock moving between server polls. */
+function useRotateDue(rotation) {
+  const [due, setDue] = useState(
+    rotation?.dueInEpochs == null ? null : Number(rotation.dueInEpochs),
+  );
+  const snap = useRef({
+    due: rotation?.dueInEpochs,
+    at: Date.now(),
+  });
+  useEffect(() => {
+    snap.current = { due: rotation?.dueInEpochs, at: Date.now() };
+    setDue(rotation?.dueInEpochs == null ? null : Number(rotation.dueInEpochs));
+  }, [rotation?.dueInEpochs, rotation?.block, rotation?.phase]);
+  useEffect(() => {
+    const id = setInterval(() => {
+      const s = snap.current;
+      if (s.due == null || !Number.isFinite(Number(s.due))) return;
+      const slipped = Math.floor((Date.now() - s.at) / 3000);
+      setDue(Math.max(0, Number(s.due) - slipped));
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+  return due;
+}
+
 export default function PoolThresholdSigner() {
   const [share, setShare] = useState(null);
   const [enabled, setEnabled] = useState(true);
@@ -117,7 +142,7 @@ export default function PoolThresholdSigner() {
       if (hb?.share && hb.share !== share) {
         setShare(hb.share);
       }
-      if (hb?.orbit || hb?.holders || hb?.holder1 || hb?.seatEpoch != null) {
+      if (hb?.orbit || hb?.holders || hb?.holder1 || hb?.seatEpoch != null || hb?.rotation) {
         setPool3p((prev) => ({
           ...(prev || {}),
           orbit: hb.orbit || prev?.orbit,
@@ -125,6 +150,8 @@ export default function PoolThresholdSigner() {
           holder1: hb.holder1 ?? prev?.holder1,
           holder2: hb.holder2 ?? prev?.holder2,
           holders: hb.holders || prev?.holders,
+          rotation: hb.rotation || prev?.rotation,
+          packs: hb.packs || prev?.packs,
         }));
       }
       const active = hb?.share || share;
@@ -289,6 +316,9 @@ export default function PoolThresholdSigner() {
     paid: false,
   };
   const isOrbit = !share || share.waitlist || Number(share.role) === 0;
+  const rotateDue = useRotateDue(pool3p?.rotation);
+  const d1Pack = pool3p?.packs?.['1'] || pool3p?.packs?.[1];
+  const d2Pack = pool3p?.packs?.['2'] || pool3p?.packs?.[2];
 
   const phaseLabel =
     !share && phase === 'error'
@@ -429,18 +459,33 @@ export default function PoolThresholdSigner() {
           {pool3p.clientBorn ? ' · client-born 3P' : ''}
         </p>
       ) : null}
-      {pool3p?.rotation ? (
-        <p className="pool-signer__meta">
-          Rotate {pool3p.rotation.phase || 'idle'}
-          {pool3p.rotation.dueInEpochs != null
-            ? ` · next Q in ${pool3p.rotation.dueInEpochs} epochs`
+      {pool3p?.rotation || rotateDue != null ? (
+        <p className="pool-signer__rotate">
+          Q rotate {pool3p?.rotation?.phase || 'idle'}
+          {rotateDue != null ? ` · ${rotateDue} epochs left` : ''}
+          {pool3p?.rotation?.intervalEpochs
+            ? ` / ${pool3p.rotation.intervalEpochs}`
             : ''}
-          {pool3p.rotation.next?.needBirth?.[1] || pool3p.rotation.next?.needBirth?.[2]
+          {pool3p?.rotation?.next?.needBirth?.[1] || pool3p?.rotation?.next?.needBirth?.[2]
             ? ' · this tab can birth the next Q'
             : ''}
-          {pool3p.rotation.next?.address
-            ? ` · next ${pool3p.rotation.next.address}`
+          {pool3p?.rotation?.next?.address
+            ? ` · next ${String(pool3p.rotation.next.address).slice(0, 12)}…`
             : ''}
+        </p>
+      ) : (
+        <p className="pool-signer__rotate">Q rotate · waiting for coordinator clock</p>
+      )}
+      {d1Pack && !d1Pack.ready ? (
+        <p className="pool-signer__meta is-warn">
+          d1 pack not on this orbit ({d1Pack.liveCovered || 0}/
+          {d1Pack.liveNeed || 0} live) — the d1 tab must republish
+        </p>
+      ) : null}
+      {d2Pack && !d2Pack.ready ? (
+        <p className="pool-signer__meta is-warn">
+          d2 pack not on this orbit ({d2Pack.liveCovered || 0}/
+          {d2Pack.liveNeed || 0} live)
         </p>
       ) : null}
       {verify && (

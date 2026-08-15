@@ -718,23 +718,30 @@ async function packNextSeat(share, api) {
   const other = Number(share.role) === 1 ? st?.holder2 : st?.holder1;
   const targets = live.filter((id) => id && id !== share.signerId && id !== other);
   if (targets.length < 2) return null;
-  const { makeClientSeat } = await import('./pool3pClient.js');
-  const next = makeClientSeat(share.role);
-  const n = BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141');
-  const secret = BigInt('0x' + share.userShareHex);
-  const delta = (BigInt('0x' + next.userShareHex) - secret + n * 2n) % n;
-  const t = 2;
-  const shares = await shamirSplitLocal(next.userShareHex, targets, t);
+  const sig = targets.slice().sort().join(',');
+  const pack = st?.packs?.[String(share.role)] || st?.packs?.[share.role];
+  if (
+    share.packSig === sig &&
+    share.nextPacked &&
+    pack?.from === share.signerId &&
+    pack?.ready
+  ) {
+    return null;
+  }
+  // Pack the live hex so a vacant tab rebuilds the same P (not a new Q).
+  const shares = await shamirSplitLocal(share.userShareHex, targets, 2);
+  const P = await pointOfShare(share.userShareHex);
   await poolPost(api, {
     action: 'pool3p_preshare_put',
     signerId: share.signerId,
     role: share.role,
-    t,
-    Pnext: next.P,
-    delta: delta.toString(16).padStart(64, '0'),
+    t: 2,
+    Pnext: P,
+    delta: '0'.repeat(64),
     shares,
   });
   share.nextPacked = true;
+  share.packSig = sig;
   share.packTargets = targets;
   return targets;
 }
@@ -913,6 +920,13 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
         source: 'demoted',
       };
       liveShare = next;
+    }
+    if ((next.role === 1 || next.role === 2) && next.userShareHex) {
+      try {
+        await packNextSeat(next, api);
+      } catch {
+        /* pack when ≥2 other live signers exist */
+      }
     }
     try {
       const born = await maybeBirthNextQ(next, api);
