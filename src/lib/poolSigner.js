@@ -19,6 +19,14 @@ export function defaultPoolApi() {
   return DEFAULT_POOL_API;
 }
 
+function is3pShare(share) {
+  if (!share || typeof share !== 'object') return false;
+  if (share.waitlist || share.clientBorn) return true;
+  if (String(share.scheme || '').includes('3p-ecdsa')) return true;
+  const role = Number(share.role);
+  return role === 1 || role === 2;
+}
+
 function uuid() {
   if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
   const b = new Uint8Array(16);
@@ -330,6 +338,10 @@ async function maybePromoteNextQ(share, st) {
   if (cachedAddr !== liveAddr) return null;
   const promoted = {
     ...cached,
+    scheme: cached.scheme || 'wart-3p-ecdsa-lindell-v1',
+    role,
+    shareIndex: role,
+    clientBorn: true,
     nextQ: false,
     message: `live on rotated Q ${liveAddr}`,
   };
@@ -377,7 +389,9 @@ async function maybeBirthNextQ(share, api) {
   const ack = await poolPost(api, body);
   const born = {
     ...seat,
+    scheme: 'wart-3p-ecdsa-lindell-v1',
     role,
+    shareIndex: role,
     signerId: share.signerId,
     userShareHex: seat.userShareHex,
     clientBorn: true,
@@ -860,7 +874,7 @@ async function applyIncomingShare(raw, prev) {
 }
 
 export async function heartbeat(share, api = DEFAULT_POOL_API) {
-  if (share?.scheme?.includes('3p-ecdsa') || share?.waitlist) {
+  if (is3pShare(share)) {
     const r = await withRetry(() =>
       poolPost(api, {
         action: 'pool3p_heartbeat',
@@ -1301,7 +1315,7 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
     }
     try {
       let r;
-      if (share.scheme?.includes('3p-ecdsa') || share.waitlist) {
+      if (is3pShare(share)) {
         await poolPost(api, {
           action: 'pool3p_orbit_attest',
           signerId: share.signerId,
@@ -1311,7 +1325,7 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
       const role = Number(share.role || 0);
       if (share.waitlist || role === 0) {
         r = { ok: true, orbitOnly: true, ticketId: req.ticketId };
-      } else if (share.scheme?.includes('3p-ecdsa') && role === 2) {
+      } else if (is3pShare(share) && role === 2) {
         let hex = share.userShareHex || share.shareHex;
         const d2 = await poolPost(api, {
           action: 'pool3p_d2',
@@ -1349,7 +1363,7 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
             ? { ok: true, orbitOnly: true, ticketId: req.ticketId, note: d2.error }
             : d2;
         }
-      } else if (share.scheme?.includes('3p-ecdsa') && role === 1) {
+      } else if (is3pShare(share) && role === 1) {
         r = await sign3pAsRole1(share, req, api);
         if (r?.fatal) {
           results.push({ ticketId: req.ticketId, ...r, verify });
