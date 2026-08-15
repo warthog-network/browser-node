@@ -238,13 +238,21 @@ async function findBornCacheForRole(role, expectedP) {
   };
   const sid = await storageGet(ID_KEY);
   if (typeof sid === 'string') {
+    const next = await readNextBornCache(sid, role);
+    if (await match(next)) return next;
     const c = await readBornCache(sid, role);
     if (await match(c)) return c;
   }
   try {
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
-      if (!k || !k.startsWith('wart.poolSigner.born.') || !k.endsWith(`.${role}`)) continue;
+      if (!k || !k.endsWith(`.${role}`)) continue;
+      if (
+        !k.startsWith('wart.poolSigner.born.') &&
+        !k.startsWith('wart.poolSigner.bornNext.')
+      ) {
+        continue;
+      }
       const c = JSON.parse(localStorage.getItem(k) || 'null');
       if (await match(c)) return c;
     }
@@ -255,7 +263,13 @@ async function findBornCacheForRole(role, expectedP) {
     if (typeof chrome !== 'undefined' && chrome.storage?.local) {
       const all = await chrome.storage.local.get(null);
       for (const [k, v] of Object.entries(all || {})) {
-        if (!k.startsWith('wart.poolSigner.born.') || !v?.userShareHex) continue;
+        if (
+          (!k.startsWith('wart.poolSigner.born.') &&
+            !k.startsWith('wart.poolSigner.bornNext.')) ||
+          !v?.userShareHex
+        ) {
+          continue;
+        }
         if (Number(v.role) !== Number(role) && !k.endsWith(`.${role}`)) continue;
         if (await match(v)) return v;
       }
@@ -444,19 +458,28 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
     return born;
   }
   if (r.clientBorn && (r.role === 1 || r.role === 2) && !r.needBirth) {
-    const cached = await readBornCache(signerId, r.role);
+    const liveP = r.expectedP || r.seal?.[Number(r.role) === 1 ? 'P1' : 'P2'];
+    const cached =
+      (await findBornCacheForRole(r.role, liveP)) ||
+      (await readNextBornCache(signerId, r.role)) ||
+      (await readBornCache(signerId, r.role));
     if (cached?.userShareHex) {
-      liveShare = {
-        ...r,
-        ...cached,
-        userShareHex: cached.userShareHex,
-        shareHex: cached.userShareHex,
-        clientBorn: true,
-        waitlist: false,
-        role: Number(r.role),
-      };
-      attachPaillier(liveShare, cached);
-      return liveShare;
+      const p = liveP ? await pointOfShare(cached.userShareHex) : '';
+      if (!liveP || compactPointHex(p) === compactPointHex(liveP)) {
+        writeBornCache({ ...cached, role: Number(r.role), nextQ: false });
+        liveShare = {
+          ...r,
+          ...cached,
+          userShareHex: cached.userShareHex,
+          shareHex: cached.userShareHex,
+          clientBorn: true,
+          waitlist: false,
+          nextQ: false,
+          role: Number(r.role),
+        };
+        attachPaillier(liveShare, cached);
+        return liveShare;
+      }
     }
     try {
       const recovered = await tryRecoverFromPack(signerId, r.role, api, {
@@ -634,10 +657,17 @@ async function tryRecoverFromPack(signerId, role, api, hint) {
       `orbit pack incomplete (have ${pack?.shares?.length || 0}, need ${need})`,
     );
   }
+  if (pack?.stale) {
+    throw new Error(pack.message || `orbit pack is previous Q (not live P${role})`);
+  }
   const nextHex = shamirCombineLocal(pack.shares);
   if (!nextHex) throw new Error('orbit pack combine failed');
   const n = BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141');
   const want = compactPointHex(hint?.expectedP || pack.P || '');
+  const packedP = compactPointHex(pack.Pnext || '');
+  if (want && packedP && packedP !== want) {
+    throw new Error(`orbit pack is previous Q (not live P${role})`);
+  }
   const cands = [nextHex];
   if (pack.delta) {
     const dlt = BigInt('0x' + String(pack.delta).replace(/^0x/i, ''));
@@ -839,6 +869,11 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
       }),
     );
     let next = share;
+    const promoted = await maybePromoteNextQ(share, {
+      ...r,
+      address: r.address || r.seal?.address,
+    }).catch(() => null);
+    if (promoted?.userShareHex) next = promoted;
     const assigned = Number(r.role || r.share?.role || 0);
     const iAmHolder1 = r.holder1 === share.signerId || r.holders?.['1']?.signerId === share.signerId;
     const iAmHolder2 = r.holder2 === share.signerId || r.holders?.['2']?.signerId === share.signerId;
@@ -888,22 +923,37 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
         });
       } catch (e) {
         if (/d[12]·G ≠ P|share was opened or replaced/i.test(e?.message || '')) {
-          const recovered = await tryRecoverFromPack(share.signerId, next.role, api, {
-            expectedP: seal[next.role === 1 ? 'P1' : 'P2'],
-            poolAddress: next.poolAddress,
-            publicKey: seal.publicKey || next.publicKey,
-            seal,
-          });
-          if (recovered?.userShareHex) {
-            writeBornCache(recovered);
-            next = recovered;
-            liveShare = recovered;
-            if (Number(next.role) === 1) {
-              try {
-                next = await ensureD1Paillier(recovered, api);
-              } catch {
-                /* */
+          const wantP = seal[next.role === 1 ? 'P1' : 'P2'];
+          const fromCache = await findBornCacheForRole(next.role, wantP);
+          if (fromCache?.userShareHex) {
+            writeBornCache({ ...fromCache, role: next.role, nextQ: false });
+            next = { ...fromCache, role: next.role, nextQ: false, seal };
+            liveShare = next;
+          } else {
+            try {
+              const recovered = await tryRecoverFromPack(share.signerId, next.role, api, {
+                expectedP: wantP,
+                poolAddress: next.poolAddress || r.address,
+                publicKey: seal.publicKey || next.publicKey,
+                seal,
+              });
+              if (recovered?.userShareHex) {
+                writeBornCache(recovered);
+                next = recovered;
+                liveShare = recovered;
+                if (Number(next.role) === 1) {
+                  try {
+                    next = await ensureD1Paillier(recovered, api);
+                  } catch {
+                    /* */
+                  }
+                }
               }
+            } catch (e2) {
+              next = {
+                ...next,
+                message: e2?.message || e.message,
+              };
             }
           }
         }
