@@ -204,13 +204,26 @@ export async function fetchPool3pStatus(api = DEFAULT_POOL_API) {
   );
 }
 
+function compactPointHex(hex) {
+  return String(hex || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Browser-safe: never use Node `Buffer` here (it is undefined in Chrome/Brave). */
 async function pointOfShare(hex) {
   const { secp256k1 } = await import('@noble/curves/secp256k1');
   const n = secp256k1.CURVE.n;
   const h = String(hex || '').replace(/^0x/i, '');
-  let d = BigInt('0x' + h) % n;
+  const d = BigInt('0x' + h) % n;
   if (d <= 0n) return '';
-  return Buffer.from(secp256k1.ProjectivePoint.BASE.multiply(d).toRawBytes(true)).toString('hex');
+  const pt = secp256k1.ProjectivePoint.BASE.multiply(d);
+  if (typeof pt.toHex === 'function') return compactPointHex(pt.toHex(true));
+  return bytesToHex(pt.toRawBytes(true));
 }
 
 async function findBornCacheForRole(role, expectedP) {
@@ -261,6 +274,7 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
       role: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
     }),
   );
+  let recoverErr = null;
   if (r.recoverVacant && (r.expectedP || r.vacantBorn)) {
     const role = Number(r.recoverVacant || 1);
     const P = r.expectedP || r.vacantBorn?.[String(role)]?.expectedP;
@@ -276,27 +290,31 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
           role,
           shareHex: cached.userShareHex,
         });
-      } catch {
-        /* still return cached so this tab can sign / rekey */
+        liveShare = { ...cached, clientBorn: true, waitlist: false, role };
+        return liveShare;
+      } catch (e) {
+        recoverErr = e;
       }
-      liveShare = { ...cached, clientBorn: true, waitlist: false, role };
-      return liveShare;
     }
-    const recovered = await tryRecoverFromPack(signerId, role, api, {
-      ...r,
-      expectedP: P,
-    });
-    if (recovered?.userShareHex) {
-      writeBornCache(recovered);
-      liveShare = recovered;
-      if (Number(role) === 1) {
-        try {
-          liveShare = await ensureD1Paillier(recovered, api);
-        } catch {
-          /* rekey on first sign */
+    try {
+      const recovered = await tryRecoverFromPack(signerId, role, api, {
+        ...r,
+        expectedP: P,
+      });
+      if (recovered?.userShareHex) {
+        writeBornCache(recovered);
+        liveShare = recovered;
+        if (Number(role) === 1) {
+          try {
+            liveShare = await ensureD1Paillier(recovered, api);
+          } catch {
+            /* rekey on first sign */
+          }
         }
+        return liveShare;
       }
-      return liveShare;
+    } catch (e) {
+      recoverErr = e;
     }
   }
   if (r.needBirth && (r.role === 1 || r.role === 2)) {
@@ -327,21 +345,25 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
       attachPaillier(liveShare, cached);
       return liveShare;
     }
-    const recovered = await tryRecoverFromPack(signerId, r.role, api, {
-      ...r,
-      expectedP: r.expectedP || r.seal?.[Number(r.role) === 1 ? 'P1' : 'P2'],
-    });
-    if (recovered) {
-      writeBornCache(recovered);
-      liveShare = recovered;
-      if (Number(r.role) === 1) {
-        try {
-          liveShare = await ensureD1Paillier(recovered, api);
-        } catch {
-          /* first sign rekeys */
+    try {
+      const recovered = await tryRecoverFromPack(signerId, r.role, api, {
+        ...r,
+        expectedP: r.expectedP || r.seal?.[Number(r.role) === 1 ? 'P1' : 'P2'],
+      });
+      if (recovered?.userShareHex) {
+        writeBornCache(recovered);
+        liveShare = recovered;
+        if (Number(r.role) === 1) {
+          try {
+            liveShare = await ensureD1Paillier(recovered, api);
+          } catch {
+            /* first sign rekeys */
+          }
         }
+        return liveShare;
       }
-      return liveShare;
+    } catch (e) {
+      recoverErr = e;
     }
   }
   if (r.clientBorn && (r.role === 1 || r.role === 2) && liveShare?.role === r.role && liveShare.userShareHex) {
@@ -361,7 +383,13 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
     };
     return liveShare;
   }
-  const share = normalizeShare({ ...r, source: 'enrolled' });
+  const share = normalizeShare({
+    ...r,
+    source: 'enrolled',
+    message: recoverErr
+      ? `rebuild failed: ${recoverErr.message || recoverErr}`
+      : r.message,
+  });
   if (!share) throw new Error('enroll returned no share');
   if (!share.waitlist && r.seal && (share.role === 1 || share.role === 2) && (share.userShareHex || share.shareHex)) {
     const { verifyShareSeal } = await import('./pool3pClient.js');
@@ -482,66 +510,65 @@ function attachPaillier(target, src) {
 }
 
 async function tryRecoverFromPack(signerId, role, api, hint) {
-  try {
-    const pack = await poolPost(api, {
-      action: 'pool3p_preshare_collect',
-      signerId,
-      role,
-    });
-    if (!pack?.shares || pack.shares.length < (pack.t || 2)) return null;
-    const nextHex = shamirCombineLocal(pack.shares);
-    if (!nextHex) return null;
-    const n = BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141');
-    const want = String(hint?.expectedP || pack.P || '')
-      .replace(/^0x/i, '')
-      .toLowerCase();
-    const cands = [nextHex];
-    if (pack.delta) {
-      const dlt = BigInt('0x' + String(pack.delta).replace(/^0x/i, ''));
-      let cur = (BigInt('0x' + nextHex) - dlt) % n;
-      if (cur < 0n) cur += n;
-      cands.unshift(cur.toString(16).padStart(64, '0'));
-    }
-    let hex = null;
-    for (const c of cands) {
-      if (!want) {
-        hex = c;
-        break;
-      }
-      const p = await pointOfShare(c);
-      if (p.toLowerCase() === want) {
-        hex = c;
-        break;
-      }
-    }
-    if (!hex) return null;
-    try {
-      await poolPost(api, {
-        action: 'pool3p_claim_born',
-        signerId,
-        role,
-        shareHex: hex,
-      });
-    } catch {
-      /* claim may fail if another tab won; still return hex */
-    }
-    return {
-      scheme: 'wart-3p-ecdsa-lindell-v1',
-      role: Number(role),
-      shareIndex: Number(role),
-      shareHex: hex,
-      userShareHex: hex,
-      signerId,
-      clientBorn: true,
-      source: 'orbit-reconstruct',
-      waitlist: false,
-      poolAddress: hint.poolAddress || pack.poolAddress || null,
-      publicKey: hint.publicKey || null,
-      message: `d${role} rebuilt from orbit pack (t=${pack.t || 2})`,
-    };
-  } catch {
-    return null;
+  const pack = await poolPost(api, {
+    action: 'pool3p_preshare_collect',
+    signerId,
+    role,
+  });
+  const need = Number(pack?.t || 2);
+  if (!pack?.shares || pack.shares.length < need) {
+    throw new Error(
+      `orbit pack incomplete (have ${pack?.shares?.length || 0}, need ${need})`,
+    );
   }
+  const nextHex = shamirCombineLocal(pack.shares);
+  if (!nextHex) throw new Error('orbit pack combine failed');
+  const n = BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141');
+  const want = compactPointHex(hint?.expectedP || pack.P || '');
+  const cands = [nextHex];
+  if (pack.delta) {
+    const dlt = BigInt('0x' + String(pack.delta).replace(/^0x/i, ''));
+    let cur = (BigInt('0x' + nextHex) - dlt) % n;
+    if (cur < 0n) cur += n;
+    cands.unshift(cur.toString(16).padStart(64, '0'));
+  }
+  let hex = null;
+  for (const c of cands) {
+    if (!want) {
+      hex = c;
+      break;
+    }
+    const p = compactPointHex(await pointOfShare(c));
+    if (p === want) {
+      hex = c;
+      break;
+    }
+  }
+  if (!hex) {
+    throw new Error(`orbit pack reconstructed but did not match live P${role}`);
+  }
+  const ack = await poolPost(api, {
+    action: 'pool3p_claim_born',
+    signerId,
+    role,
+    shareHex: hex,
+  });
+  return {
+    scheme: 'wart-3p-ecdsa-lindell-v1',
+    role: Number(ack?.role || role),
+    shareIndex: Number(ack?.role || role),
+    shareHex: hex,
+    userShareHex: hex,
+    signerId,
+    clientBorn: true,
+    source: 'orbit-reconstruct',
+    waitlist: false,
+    poolAddress: hint.poolAddress || ack?.poolAddress || pack.poolAddress || null,
+    publicKey: hint.publicKey || ack?.publicKey || null,
+    seatEpoch: ack?.seatEpoch ?? hint.seatEpoch ?? 0,
+    seal: ack?.seal || hint.seal || null,
+    message: `d${role} rebuilt from orbit pack (t=${pack.t || 2} + δ)`,
+  };
 }
 
 function shamirCombineLocal(shares) {
@@ -699,6 +726,26 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
     ) {
       next = await enrollSigner(share.signerId, api);
       return { ...r, share: next };
+    }
+    const vacantSeat =
+      !(r.holder1 || r.holders?.['1']?.signerId) ||
+      !(r.holder2 || r.holders?.['2']?.signerId);
+    if ((next.waitlist || Number(next.role) === 0) && vacantSeat) {
+      try {
+        const recovered = await enrollSigner(share.signerId, api);
+        if (recovered && !recovered.waitlist && recovered.userShareHex) {
+          next = recovered;
+          return { ...r, share: next, shareUpdated: true };
+        }
+        if (recovered?.message) {
+          next = { ...next, message: recovered.message };
+        }
+      } catch (e) {
+        next = {
+          ...next,
+          message: `rebuild failed: ${e?.message || e}`,
+        };
+      }
     }
     if (r.share) {
       const applied = await applyIncomingShare(r.share, share);

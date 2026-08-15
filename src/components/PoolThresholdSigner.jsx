@@ -63,13 +63,17 @@ export default function PoolThresholdSigner() {
           setShare(s);
           setPool3p(p3);
           setLog(
-            s.waitlist
-              ? 'orbit voter — d1/d2 leased; if a holder goes idle you can claim the seat'
-              : s.role === 1
-                ? 'holding d1 (Lindell finish). Idle > 2 min reissues this seat.'
-                : s.role === 2
-                  ? 'holding d2. Idle > 2 min reissues this seat.'
-                  : `joined as slot ${s.shareIndex}`,
+            s.message && /rebuild|rebuilt|orbit pack/i.test(String(s.message))
+              ? s.message
+              : s.waitlist
+                ? 'orbit voter — vacant d1/d2 is rebuilt from the orbit pack on this tab'
+                : s.role === 1
+                  ? s.source === 'orbit-reconstruct'
+                    ? s.message || 'holding d1 rebuilt from orbit pack'
+                    : 'holding d1 (Lindell finish). Idle > 2 min reissues this seat.'
+                  : s.role === 2
+                    ? 'holding d2. Idle > 2 min reissues this seat.'
+                    : `joined as slot ${s.shareIndex}`,
           );
           setError(null);
         }
@@ -117,8 +121,11 @@ export default function PoolThresholdSigner() {
       }
       if (hb?.shareUpdated) {
         setLog(
-          `epoch ${hb.seatEpoch} · new ${seatLabel(hb.share || active)} hex applied (old share dropped)`,
+          (hb.share || active)?.message ||
+            `epoch ${hb.seatEpoch} · new ${seatLabel(hb.share || active)} hex applied (old share dropped)`,
         );
+      } else if ((hb.share || active)?.message && /rebuild/i.test(String((hb.share || active).message))) {
+        setLog((hb.share || active).message);
       }
       setStatus(st);
       setError(null);
@@ -129,8 +136,11 @@ export default function PoolThresholdSigner() {
       if (openCount === 0) {
         setPhase('online');
         if (!hb?.shareUpdated) {
+          const msg = (hb.share || active)?.message || '';
           setLog(
-            `${seatLabel(active)} · orbit ${liveN} live · n-of-n among live (need ${needN})`,
+            /rebuild failed|rebuilt from orbit pack/i.test(msg)
+              ? msg
+              : `${seatLabel(active)} · orbit ${liveN} live · n-of-n among live (need ${needN})`,
           );
         }
         return;
@@ -314,7 +324,9 @@ export default function PoolThresholdSigner() {
               : pool3p?.holder1
                 ? 'assigned'
                 : pool3p?.seatsReady?.[1] || pool3p?.seatsReady?.['1']
-                  ? 'offline — this tab can rebuild d1 from orbit pack (t=2 + δ)'
+                  ? /rebuild failed/i.test(String(share?.message || ''))
+                    ? share.message
+                    : 'rebuilding d1 from orbit pack (t=2 + δ)…'
                   : 'waiting for a browser to birth d1'}
           </span>
         </div>
