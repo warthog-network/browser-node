@@ -720,12 +720,18 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
     );
     let next = share;
     const assigned = Number(r.role || r.share?.role || 0);
+    const iAmHolder1 = r.holder1 === share.signerId || r.holders?.['1']?.signerId === share.signerId;
+    const iAmHolder2 = r.holder2 === share.signerId || r.holders?.['2']?.signerId === share.signerId;
+    const wantRole = iAmHolder1 ? 1 : iAmHolder2 ? 2 : assigned;
     if (
-      (assigned === 1 || assigned === 2) &&
-      (!share.userShareHex || (assigned === 1 && !share.paillierLambda))
+      (wantRole === 1 || wantRole === 2) &&
+      (share.waitlist ||
+        Number(share.role) !== wantRole ||
+        !share.userShareHex ||
+        (wantRole === 1 && !share.paillierLambda))
     ) {
       next = await enrollSigner(share.signerId, api);
-      return { ...r, share: next };
+      return { ...r, share: next, shareUpdated: !next.waitlist };
     }
     const vacantSeat =
       !(r.holder1 || r.holders?.['1']?.signerId) ||
@@ -866,7 +872,11 @@ async function ensureD1Paillier(share, api) {
 
 async function sign3pAsRole1(share, req, api) {
   if (fatalTickets.has(req.ticketId)) {
-    return { ok: false, fatal: true, ticketId: req.ticketId, error: fatalTickets.get(req.ticketId) };
+    const prev = String(fatalTickets.get(req.ticketId) || '');
+    if (!/rekey denied|d1·G ≠|wrong tab|missing Paillier/i.test(prev)) {
+      return { ok: false, fatal: true, ticketId: req.ticketId, error: prev };
+    }
+    fatalTickets.delete(req.ticketId);
   }
   const { clientSignRound1, clientSignFinish } = await import('./pool3pClient.js');
   let ready;
@@ -874,8 +884,25 @@ async function sign3pAsRole1(share, req, api) {
     ready = await ensureD1Paillier(share, api);
   } catch (e) {
     const msg = e?.message || String(e);
-    fatalTickets.set(req.ticketId, msg);
-    return { ok: false, fatal: true, ticketId: req.ticketId, error: msg };
+    if (/rekey denied|d1·G ≠ live P1|wrong tab/i.test(msg)) {
+      try {
+        const recovered = await tryRecoverFromPack(share.signerId, 1, api, {
+          expectedP: (await fetchPool3pStatus(api).catch(() => null))?.seal?.P1,
+          poolAddress: share.poolAddress,
+          publicKey: share.publicKey,
+          seal: share.seal,
+        });
+        if (recovered?.userShareHex) {
+          writeBornCache(recovered);
+          ready = await ensureD1Paillier(recovered, api);
+        }
+      } catch (e2) {
+        return { ok: false, waiting: true, ticketId: req.ticketId, error: e2?.message || msg };
+      }
+    }
+    if (!ready?.paillierLambda) {
+      return { ok: false, waiting: true, ticketId: req.ticketId, error: msg };
+    }
   }
   const live = await fetchPool3pStatus(api).catch(() => null);
   const poolPub = live?.seal?.publicKey || live?.publicKey || ready.publicKey || ready.seal?.publicKey;
