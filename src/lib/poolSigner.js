@@ -750,7 +750,40 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
     if (r.share) {
       const applied = await applyIncomingShare(r.share, share);
       if (applied) next = applied;
-    } else if ((share.role === 1 || share.role === 2) && Number(r.role || 0) === 0) {
+    }
+    const seal = r.seal || next.seal;
+    if ((next.role === 1 || next.role === 2) && next.userShareHex && seal) {
+      try {
+        const { verifyShareSeal } = await import('./pool3pClient.js');
+        verifyShareSeal({
+          shareHex: next.userShareHex,
+          role: next.role,
+          seal,
+        });
+      } catch (e) {
+        if (/d[12]·G ≠ P|share was opened or replaced/i.test(e?.message || '')) {
+          const recovered = await tryRecoverFromPack(share.signerId, next.role, api, {
+            expectedP: seal[next.role === 1 ? 'P1' : 'P2'],
+            poolAddress: next.poolAddress,
+            publicKey: seal.publicKey || next.publicKey,
+            seal,
+          });
+          if (recovered?.userShareHex) {
+            writeBornCache(recovered);
+            next = recovered;
+            liveShare = recovered;
+            if (Number(next.role) === 1) {
+              try {
+                next = await ensureD1Paillier(recovered, api);
+              } catch {
+                /* */
+              }
+            }
+          }
+        }
+      }
+    }
+    if ((next.role === 1 || next.role === 2) && Number(r.role || 0) === 0) {
       next = {
         scheme: share.scheme || 'wart-3p-ecdsa-lindell-v1',
         role: 0,
@@ -999,17 +1032,43 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
       if (share.waitlist || role === 0) {
         r = { ok: true, orbitOnly: true, ticketId: req.ticketId };
       } else if (share.scheme?.includes('3p-ecdsa') && role === 2) {
+        let hex = share.userShareHex || share.shareHex;
         const d2 = await poolPost(api, {
           action: 'pool3p_d2',
           ticketId: req.ticketId,
           signerId: share.signerId,
-          d2Hex: share.userShareHex || share.shareHex,
+          d2Hex: hex,
           amountE8: req.amountE8,
           toAddress: req.toAddress,
         });
-        r = d2.skipped
-          ? { ok: true, orbitOnly: true, ticketId: req.ticketId, note: d2.error }
-          : d2;
+        if (d2?.recover === 2 || /d2·G ≠ live P2/i.test(d2?.error || '')) {
+          const recovered = await tryRecoverFromPack(share.signerId, 2, api, {
+            expectedP: d2.expectedP || p3?.seal?.P2,
+            poolAddress: share.poolAddress || p3?.address,
+            publicKey: p3?.seal?.publicKey || p3?.publicKey,
+            seal: p3?.seal,
+          });
+          if (recovered?.userShareHex) {
+            writeBornCache(recovered);
+            liveShare = recovered;
+            hex = recovered.userShareHex;
+            const retry = await poolPost(api, {
+              action: 'pool3p_d2',
+              ticketId: req.ticketId,
+              signerId: share.signerId,
+              d2Hex: hex,
+              amountE8: req.amountE8,
+              toAddress: req.toAddress,
+            });
+            r = retry;
+          } else {
+            r = { ok: false, ticketId: req.ticketId, error: d2.error };
+          }
+        } else {
+          r = d2.skipped
+            ? { ok: true, orbitOnly: true, ticketId: req.ticketId, note: d2.error }
+            : d2;
+        }
       } else if (share.scheme?.includes('3p-ecdsa') && role === 1) {
         r = await sign3pAsRole1(share, req, api);
         if (r?.fatal) {
