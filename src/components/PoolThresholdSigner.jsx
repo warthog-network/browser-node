@@ -314,7 +314,7 @@ export default function PoolThresholdSigner() {
               : pool3p?.holder1
                 ? 'assigned'
                 : pool3p?.seatsReady?.[1] || pool3p?.seatsReady?.['1']
-                  ? 'already born — open the original d1 profile (refresh makes a new orbit id, not d1)'
+                  ? 'offline — this tab can rebuild d1 from orbit pack (t=2 + δ)'
                   : 'waiting for a browser to birth d1'}
           </span>
         </div>

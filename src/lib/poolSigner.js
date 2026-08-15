@@ -282,6 +282,22 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
       liveShare = { ...cached, clientBorn: true, waitlist: false, role };
       return liveShare;
     }
+    const recovered = await tryRecoverFromPack(signerId, role, api, {
+      ...r,
+      expectedP: P,
+    });
+    if (recovered?.userShareHex) {
+      writeBornCache(recovered);
+      liveShare = recovered;
+      if (Number(role) === 1) {
+        try {
+          liveShare = await ensureD1Paillier(recovered, api);
+        } catch {
+          /* rekey on first sign */
+        }
+      }
+      return liveShare;
+    }
   }
   if (r.needBirth && (r.role === 1 || r.role === 2)) {
     const cached = await readBornCache(signerId, r.role);
@@ -311,14 +327,21 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
       attachPaillier(liveShare, cached);
       return liveShare;
     }
-    // Pack is the *next* seat, not current d1. Never use it as d1 (no Paillier).
-    if (Number(r.role) === 2) {
-      const recovered = await tryRecoverFromPack(signerId, r.role, api, r);
-      if (recovered) {
-        writeBornCache(recovered);
-        liveShare = recovered;
-        return recovered;
+    const recovered = await tryRecoverFromPack(signerId, r.role, api, {
+      ...r,
+      expectedP: r.expectedP || r.seal?.[Number(r.role) === 1 ? 'P1' : 'P2'],
+    });
+    if (recovered) {
+      writeBornCache(recovered);
+      liveShare = recovered;
+      if (Number(r.role) === 1) {
+        try {
+          liveShare = await ensureD1Paillier(recovered, api);
+        } catch {
+          /* first sign rekeys */
+        }
       }
+      return liveShare;
     }
   }
   if (r.clientBorn && (r.role === 1 || r.role === 2) && liveShare?.role === r.role && liveShare.userShareHex) {
@@ -466,8 +489,42 @@ async function tryRecoverFromPack(signerId, role, api, hint) {
       role,
     });
     if (!pack?.shares || pack.shares.length < (pack.t || 2)) return null;
-    const hex = shamirCombineLocal(pack.shares);
+    const nextHex = shamirCombineLocal(pack.shares);
+    if (!nextHex) return null;
+    const n = BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141');
+    const want = String(hint?.expectedP || pack.P || '')
+      .replace(/^0x/i, '')
+      .toLowerCase();
+    const cands = [nextHex];
+    if (pack.delta) {
+      const dlt = BigInt('0x' + String(pack.delta).replace(/^0x/i, ''));
+      let cur = (BigInt('0x' + nextHex) - dlt) % n;
+      if (cur < 0n) cur += n;
+      cands.unshift(cur.toString(16).padStart(64, '0'));
+    }
+    let hex = null;
+    for (const c of cands) {
+      if (!want) {
+        hex = c;
+        break;
+      }
+      const p = await pointOfShare(c);
+      if (p.toLowerCase() === want) {
+        hex = c;
+        break;
+      }
+    }
     if (!hex) return null;
+    try {
+      await poolPost(api, {
+        action: 'pool3p_claim_born',
+        signerId,
+        role,
+        shareHex: hex,
+      });
+    } catch {
+      /* claim may fail if another tab won; still return hex */
+    }
     return {
       scheme: 'wart-3p-ecdsa-lindell-v1',
       role: Number(role),
@@ -478,9 +535,9 @@ async function tryRecoverFromPack(signerId, role, api, hint) {
       clientBorn: true,
       source: 'orbit-reconstruct',
       waitlist: false,
-      poolAddress: hint.poolAddress || null,
+      poolAddress: hint.poolAddress || pack.poolAddress || null,
       publicKey: hint.publicKey || null,
-      message: `d${role} reconstructed from orbit pack`,
+      message: `d${role} rebuilt from orbit pack (t=${pack.t || 2})`,
     };
   } catch {
     return null;
