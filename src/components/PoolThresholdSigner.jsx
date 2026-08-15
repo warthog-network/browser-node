@@ -280,7 +280,8 @@ export default function PoolThresholdSigner() {
         <span className="pool-signer__dot" aria-hidden />
         <strong>{phaseLabel}</strong>
         <span className="pool-signer__count">
-          {seatLabel(share)} · orbit {liveN}/{needN}
+          {seatLabel(share)} · {liveN} heartbeat{liveN === 1 ? '' : 's'}
+          {needN ? ` · n-of-n ${liveN}/${needN}` : ''}
         </span>
       </div>
 
@@ -394,7 +395,12 @@ export default function PoolThresholdSigner() {
               {shortId(id)}
               {id === pool3p?.holder1 ? ' · d1 holder' : ''}
               {id === pool3p?.holder2 ? ' · d2 holder' : ''}
-              {id !== pool3p?.holder1 && id !== pool3p?.holder2 ? ' · orbit' : ''}
+              {id === 'pool-3p-orbit-vps' ? ' · VPS' : ''}
+              {id !== pool3p?.holder1 &&
+              id !== pool3p?.holder2 &&
+              id !== 'pool-3p-orbit-vps'
+                ? ' · orbit'
+                : ''}
               {id === share?.signerId ? ' · you' : ''}
             </li>
           ))
