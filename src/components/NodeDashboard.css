@@ -238,6 +238,52 @@
   word-break: break-all;
 }
 
+.pool-signer__steps {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.3rem;
+}
+
+.pool-signer__steps li {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 0.28rem 0.4rem;
+}
+
+.pool-signer__steps li span {
+  display: inline-flex;
+  width: 1.05rem;
+  height: 1.05rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pool-signer__steps li.is-done {
+  color: #c8f0d4;
+  border-color: rgba(61, 206, 122, 0.45);
+}
+
+.pool-signer__steps li.is-done span {
+  background: #3dce7a;
+  color: #102016;
+}
+
+.pool-signer__steps li.is-wait span {
+  background: rgba(253, 185, 19, 0.2);
+  color: #fdb913;
+}
+
 .pool-signer__status.is-err .pool-signer__dot {
   background: #f25c05;
 }

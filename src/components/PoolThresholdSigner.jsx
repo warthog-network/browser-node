@@ -272,8 +272,8 @@ export default function PoolThresholdSigner() {
     const fromLocal = stats.history || [];
     const seen = new Set();
     const out = [];
-    for (const row of [...fromLocal, ...fromServer]) {
-      const key = row.txHash || row.ticketId;
+    for (const row of [...fromServer, ...fromLocal]) {
+      const key = row.ticketId || row.txHash;
       if (!key || seen.has(key)) continue;
       seen.add(key);
       out.push(row);
@@ -281,22 +281,31 @@ export default function PoolThresholdSigner() {
     return out.slice(0, 16);
   }, [pool3p?.paid, stats.history]);
 
+  const room = open[0] || null;
+  const steps = room?.steps || {
+    d1: !!room?.haveR1,
+    d2: !!room?.haveD2,
+    lindell: !!room?.hasPartial,
+    paid: false,
+  };
+  const isOrbit = !share || share.waitlist || Number(share.role) === 0;
+
   const phaseLabel =
     !share && phase === 'error'
       ? 'Offline'
       : !share
         ? 'Joining'
-        : phase === 'signing'
-          ? open.length
-            ? 'In the room'
-            : 'Listening'
-          : phase === 'signed'
-            ? 'Paid'
-            : phase === 'error'
-              ? 'Retrying'
-              : enabled
-                ? 'Listening'
-                : 'Paused';
+        : phase === 'signed'
+          ? 'Paid'
+          : phase === 'error'
+            ? 'Retrying'
+            : !enabled
+              ? 'Paused'
+              : room
+                ? isOrbit
+                  ? 'Attesting'
+                  : 'In the room'
+                : 'Listening';
 
   return (
     <section className="panel pool-signer" aria-label="3P pool signer">
@@ -332,7 +341,7 @@ export default function PoolThresholdSigner() {
               ? ' · d1 finishes Lindell (Paillier stays in this tab)'
               : share.role === 2
                 ? ' · d2 offers its share into the room'
-                : ' · orbit voter (does not hold d1/d2)'}
+                : ' · orbit voter: no d1/d2 share (expected) — you only attest'}
             {pool3p?.clientBorn ? '. VPS has d_dapp only.' : ''}
           </>
         ) : (
@@ -388,6 +397,23 @@ export default function PoolThresholdSigner() {
           </span>
         </div>
       </div>
+
+      {room ? (
+        <ol className="pool-signer__steps" aria-label="ceremony progress">
+          <li className={steps.d1 ? 'is-done' : 'is-wait'}>
+            <span>1</span> d1 R1 {steps.d1 ? 'in' : 'waiting'}
+          </li>
+          <li className={steps.d2 ? 'is-done' : 'is-wait'}>
+            <span>2</span> d2 share {steps.d2 ? 'in' : 'waiting'}
+          </li>
+          <li className={steps.lindell ? 'is-done' : 'is-wait'}>
+            <span>3</span> Lindell {steps.lindell ? 'combined' : 'waiting'}
+          </li>
+          <li className={steps.paid ? 'is-done' : 'is-wait'}>
+            <span>4</span> {isOrbit ? 'orbit attested' : 'broadcast'}
+          </li>
+        </ol>
+      ) : null}
 
       <p className="pool-signer__meta">{log}</p>
       {pool3p?.address ? (
