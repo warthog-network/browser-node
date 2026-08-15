@@ -1184,9 +1184,19 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
     open.push({ ...r, status: 'open' });
   }
   // Lab-demo tickets have no burn notice — they are not redeem attempts.
-  const actionable = open.filter(
+  const rawActionable = open.filter(
     (r) => !r.labDemo && !/^lab-demo-/.test(String(r.ticketId || '')),
   );
+  const rotateOpen = rawActionable.filter((r) => /^wart-pool-rotate-/.test(String(r.ticketId || '')));
+  const keepRotate =
+    p3?.rotation?.sweepTicketId &&
+    rotateOpen.some((r) => r.ticketId === p3.rotation.sweepTicketId)
+      ? p3.rotation.sweepTicketId
+      : rotateOpen[0]?.ticketId || null;
+  const actionable = rawActionable.filter((r) => {
+    if (!/^wart-pool-rotate-/.test(String(r.ticketId || ''))) return true;
+    return keepRotate && r.ticketId === keepRotate;
+  });
   const results = [];
   let lastVerify = null;
   const { verifyOpenRequest, probeMachineHealth } = await import('./poolVerify.js');
