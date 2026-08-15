@@ -266,6 +266,119 @@ async function findBornCacheForRole(role, expectedP) {
   return null;
 }
 
+function nextBornCacheKey(signerId, role) {
+  return `wart.poolSigner.bornNext.${signerId}.${role}`;
+}
+
+function writeNextBornCache(share) {
+  if (!share?.signerId || !share.userShareHex) return;
+  const key = nextBornCacheKey(share.signerId, share.role);
+  try {
+    sessionStorage.setItem(key, JSON.stringify(share));
+  } catch {
+    /* */
+  }
+  void storageSet(key, share);
+}
+
+async function readNextBornCache(signerId, role) {
+  const key = nextBornCacheKey(signerId, role);
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (raw) {
+      const j = JSON.parse(raw);
+      if (j?.userShareHex) return j;
+    }
+  } catch {
+    /* */
+  }
+  try {
+    const stored = await storageGet(key);
+    if (stored?.userShareHex) return stored;
+  } catch {
+    /* */
+  }
+  return null;
+}
+
+async function maybePromoteNextQ(share, st) {
+  const liveAddr = String(st?.address || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+  if (!liveAddr || !share?.signerId) return null;
+  const role = Number(share.role || 0);
+  if (role !== 1 && role !== 2) return null;
+  const cached = await readNextBornCache(share.signerId, role);
+  if (!cached?.userShareHex) return null;
+  const cachedAddr = String(cached.poolAddress || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+  if (cachedAddr !== liveAddr) return null;
+  const promoted = {
+    ...cached,
+    nextQ: false,
+    message: `live on rotated Q ${liveAddr}`,
+  };
+  writeBornCache(promoted);
+  liveShare = promoted;
+  return promoted;
+}
+
+async function maybeBirthNextQ(share, api) {
+  const st = await fetchPool3pStatus(api).catch(() => null);
+  const promoted = await maybePromoteNextQ(share, st);
+  if (promoted) return promoted;
+  const need = st?.rotation?.next?.needBirth || st?.rotation?.needBirth;
+  const bornBy = st?.rotation?.next?.bornBy || {};
+  if (bornBy[1] === share.signerId || bornBy[2] === share.signerId) return null;
+  if (!need || (!need[1] && !need['1'] && !need[2] && !need['2'])) return null;
+  if (Number(share.role) !== 1 && Number(share.role) !== 2) return null;
+  const role =
+    (need[1] || need['1']) && Number(share.role) === 1
+      ? 1
+      : (need[2] || need['2']) && Number(share.role) === 2
+        ? 2
+        : null;
+  if (!role) return null;
+  const { makeClientSeat } = await import('./pool3pClient.js');
+  const seat = makeClientSeat(role);
+  const body = {
+    action: 'pool3p_birth_next',
+    signerId: share.signerId,
+    role,
+    P: seat.P,
+  };
+  if (role === 1) {
+    const { generateRandomKeys } = await import('paillier-bigint');
+    const { publicKey: pk, privateKey: sk } = await generateRandomKeys(1024);
+    const enc = pk.encrypt(BigInt('0x' + String(seat.userShareHex).replace(/^0x/i, '')));
+    body.encD1 = enc.toString();
+    body.paillierN = pk.n.toString();
+    body.paillierG = pk.g.toString();
+    seat.paillierLambda = sk.lambda.toString();
+    seat.paillierMu = sk.mu.toString();
+    seat.paillierN = pk.n.toString();
+    seat.paillierG = pk.g.toString();
+  }
+  const ack = await poolPost(api, body);
+  const born = {
+    ...seat,
+    role,
+    signerId: share.signerId,
+    userShareHex: seat.userShareHex,
+    clientBorn: true,
+    nextQ: true,
+    poolAddress: ack.address || null,
+    publicKey: ack.publicKey || null,
+    seal: ack.seal || null,
+    message: ack.ready
+      ? `next Q d${role} born — ${ack.address || 'waiting other seat'}`
+      : `next Q d${role} born`,
+  };
+  writeNextBornCache(born);
+  return born;
+}
+
 export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
   const r = await withRetry(() =>
     poolPost(api, {
@@ -801,6 +914,15 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
       };
       liveShare = next;
     }
+    try {
+      const born = await maybeBirthNextQ(next, api);
+      if (born?.userShareHex && born.nextQ === false) {
+        next = born;
+        liveShare = born;
+      }
+    } catch {
+      /* next Q birth is best-effort */
+    }
     return { ...r, share: next };
   }
   const r = await withRetry(() =>
@@ -1072,14 +1194,19 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
   for (const req of actionable) {
     let verify;
     try {
-      verify = await verifyOpenRequest({
-        ticketId: req.ticketId,
-        toAddress: req.toAddress,
-        amountE8: req.amountE8,
-        poolAddress: share.poolAddress || p3?.address || st.signers?.poolAddress,
-        labDemo: Boolean(req.labDemo),
-      });
-      lastVerify = verify;
+      if (/^wart-pool-rotate-/.test(String(req.ticketId || ''))) {
+        lastVerify = { ok: true, rotationSweep: true, checks: { inspect: true } };
+        verify = lastVerify;
+      } else {
+        verify = await verifyOpenRequest({
+          ticketId: req.ticketId,
+          toAddress: req.toAddress,
+          amountE8: req.amountE8,
+          poolAddress: share.poolAddress || p3?.address || st.signers?.poolAddress,
+          labDemo: Boolean(req.labDemo),
+        });
+        lastVerify = verify;
+      }
     } catch (e) {
       results.push({
         ticketId: req.ticketId,

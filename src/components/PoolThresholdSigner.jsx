@@ -429,6 +429,20 @@ export default function PoolThresholdSigner() {
           {pool3p.clientBorn ? ' · client-born 3P' : ''}
         </p>
       ) : null}
+      {pool3p?.rotation ? (
+        <p className="pool-signer__meta">
+          Rotate {pool3p.rotation.phase || 'idle'}
+          {pool3p.rotation.dueInEpochs != null
+            ? ` · next Q in ${pool3p.rotation.dueInEpochs} epochs`
+            : ''}
+          {pool3p.rotation.next?.needBirth?.[1] || pool3p.rotation.next?.needBirth?.[2]
+            ? ' · this tab can birth the next Q'
+            : ''}
+          {pool3p.rotation.next?.address
+            ? ` · next ${pool3p.rotation.next.address}`
+            : ''}
+        </p>
+      ) : null}
       {verify && (
         <p className={`pool-signer__meta${verify.ok === false ? ' is-warn' : ''}`}>
           {formatVerifyLine(verify)}
