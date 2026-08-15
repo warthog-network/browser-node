@@ -126,7 +126,7 @@ export function clientSignRound1() {
   };
 }
 
-export function clientSignFinish({ k1Hex, rHex, ciphertext, hashHex, clientSecret }) {
+export function clientSignFinish({ k1Hex, rHex, ciphertext, hashHex, clientSecret, publicKey }) {
   if (!clientSecret?.paillierN || !clientSecret?.paillierLambda) {
     throw new Error('d1 seat missing Paillier key — re-enroll this tab as d1');
   }
@@ -152,9 +152,14 @@ export function clientSignFinish({ k1Hex, rHex, ciphertext, hashHex, clientSecre
   for (let i = 0; i < 32; i++) {
     msg[i] = parseInt(msgHex.slice(i * 2, i * 2 + 2), 16);
   }
-  const expectPub = String(clientSecret.publicKey || '')
+  const expectPub = String(
+    publicKey || clientSecret.publicKey || clientSecret.seal?.publicKey || '',
+  )
     .replace(/^0x/i, '')
     .toLowerCase();
+  if (!expectPub) {
+    throw new Error('d1 finish missing pool pubkey — cannot pick recovery id');
+  }
 
   let recid = null;
   for (let rec = 0; rec < 4; rec++) {

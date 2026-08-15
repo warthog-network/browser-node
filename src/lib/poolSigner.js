@@ -844,8 +844,22 @@ async function sign3pAsRole1(share, req, api) {
     fatalTickets.set(req.ticketId, msg);
     return { ok: false, fatal: true, ticketId: req.ticketId, error: msg };
   }
+  const live = await fetchPool3pStatus(api).catch(() => null);
+  const poolPub = live?.seal?.publicKey || live?.publicKey || ready.publicKey || ready.seal?.publicKey;
+  if (poolPub) ready.publicKey = poolPub;
+
   let k1 = k1ByTicket.get(req.ticketId);
   let st = await poolPost(api, { action: 'pool3p_ticket', ticketId: req.ticketId });
+  const staleRoom = !k1 && (st.haveR1 || st.hasPartial);
+  if (staleRoom) {
+    await poolPost(api, {
+      action: 'pool3p_reset_r1',
+      ticketId: req.ticketId,
+      signerId: ready.signerId,
+    }).catch(() => null);
+    k1 = null;
+    st = await poolPost(api, { action: 'pool3p_ticket', ticketId: req.ticketId });
+  }
   if (!k1 || !st.haveR1) {
     const prep = await poolPost(api, {
       action: 'pool3p_prepare',
@@ -873,18 +887,34 @@ async function sign3pAsRole1(share, req, api) {
   if (!st.hasPartial) {
     return { ok: true, waiting: true, status: st.status, ticketId: req.ticketId };
   }
-  const fin = clientSignFinish({
-    k1Hex: k1.k1Hex,
-    rHex: st.rHex,
-    ciphertext: st.ciphertext,
-    hashHex: k1.hashHex,
-    clientSecret: ready,
-  });
+  let fin;
+  try {
+    fin = clientSignFinish({
+      k1Hex: k1.k1Hex,
+      rHex: st.rHex,
+      ciphertext: st.ciphertext,
+      hashHex: st.hashHex || k1.hashHex,
+      clientSecret: ready,
+      publicKey: poolPub,
+    });
+  } catch (e) {
+    const msg = e?.message || String(e);
+    k1ByTicket.delete(req.ticketId);
+    if (/recovery failed|does not match pool pubkey|missing pool pubkey/i.test(msg)) {
+      await poolPost(api, {
+        action: 'pool3p_reset_r1',
+        ticketId: req.ticketId,
+        signerId: ready.signerId,
+      }).catch(() => null);
+      return { ok: false, waiting: true, retry: true, ticketId: req.ticketId, error: msg };
+    }
+    throw e;
+  }
   const paid = await poolPost(api, {
     action: 'pool3p_submit',
     ticketId: req.ticketId,
     signature65: fin.signature65,
-    hashHex: k1.hashHex,
+    hashHex: st.hashHex || k1.hashHex,
   });
   k1ByTicket.delete(req.ticketId);
   fatalTickets.delete(req.ticketId);
