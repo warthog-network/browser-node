@@ -827,6 +827,43 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
 
 const k1ByTicket = new Map();
 const fatalTickets = new Map();
+const K1_STORE = 'wart.poolSigner.k1.';
+
+function persistK1(ticketId, k1) {
+  if (!ticketId || !k1) return;
+  k1ByTicket.set(ticketId, k1);
+  try {
+    sessionStorage.setItem(K1_STORE + ticketId, JSON.stringify(k1));
+  } catch {
+    /* */
+  }
+}
+
+function loadK1(ticketId) {
+  if (k1ByTicket.has(ticketId)) return k1ByTicket.get(ticketId);
+  try {
+    const raw = sessionStorage.getItem(K1_STORE + ticketId);
+    if (raw) {
+      const k = JSON.parse(raw);
+      if (k?.k1Hex) {
+        k1ByTicket.set(ticketId, k);
+        return k;
+      }
+    }
+  } catch {
+    /* */
+  }
+  return null;
+}
+
+function dropK1(ticketId) {
+  k1ByTicket.delete(ticketId);
+  try {
+    sessionStorage.removeItem(K1_STORE + ticketId);
+  } catch {
+    /* */
+  }
+}
 
 async function ensureD1Paillier(share, api) {
   if (share?.paillierN && share?.paillierLambda) return share;
@@ -908,16 +945,15 @@ async function sign3pAsRole1(share, req, api) {
   const poolPub = live?.seal?.publicKey || live?.publicKey || ready.publicKey || ready.seal?.publicKey;
   if (poolPub) ready.publicKey = poolPub;
 
-  let k1 = k1ByTicket.get(req.ticketId);
+  let k1 = loadK1(req.ticketId);
   let st = await poolPost(api, { action: 'pool3p_ticket', ticketId: req.ticketId });
-  const staleRoom = !k1 && (st.haveR1 || st.hasPartial);
-  if (staleRoom) {
+  if (!k1 && (st.haveR1 || st.hasPartial)) {
+    // Cannot finish someone else's k1. New R1, but keep d2 and reuse prepare.
     await poolPost(api, {
       action: 'pool3p_reset_r1',
       ticketId: req.ticketId,
       signerId: ready.signerId,
     }).catch(() => null);
-    k1 = null;
     st = await poolPost(api, { action: 'pool3p_ticket', ticketId: req.ticketId });
   }
   if (!k1 || !st.haveR1) {
@@ -941,15 +977,17 @@ async function sign3pAsRole1(share, req, api) {
     if (r1?.ok === false) {
       return { ok: false, ticketId: req.ticketId, error: r1.error || 'R1 rejected', waiting: true };
     }
-    k1ByTicket.set(req.ticketId, k1);
+    persistK1(req.ticketId, k1);
     st = await poolPost(api, { action: 'pool3p_ticket', ticketId: req.ticketId });
+  }
+  if (!st.hasPartial && st.haveR1 && st.haveD2) {
+    st = await poolPost(api, { action: 'pool3p_relindell', ticketId: req.ticketId }).catch(() => st);
   }
   if (!st.hasPartial) {
     return { ok: true, waiting: true, status: st.status, ticketId: req.ticketId };
   }
-  let fin;
-  try {
-    fin = clientSignFinish({
+  const tryFinish = () =>
+    clientSignFinish({
       k1Hex: k1.k1Hex,
       rHex: st.rHex,
       ciphertext: st.ciphertext,
@@ -957,28 +995,42 @@ async function sign3pAsRole1(share, req, api) {
       clientSecret: ready,
       publicKey: poolPub,
     });
+  let fin;
+  try {
+    fin = tryFinish();
   } catch (e) {
     const msg = e?.message || String(e);
-    k1ByTicket.delete(req.ticketId);
     if (/recovery failed|does not match pool pubkey|missing pool pubkey/i.test(msg)) {
-      await poolPost(api, {
-        action: 'pool3p_reset_r1',
-        ticketId: req.ticketId,
-        signerId: ready.signerId,
-      }).catch(() => null);
-      return { ok: false, waiting: true, retry: true, ticketId: req.ticketId, error: msg };
+      st = await poolPost(api, { action: 'pool3p_relindell', ticketId: req.ticketId }).catch(() => st);
+      try {
+        if (st?.hasPartial) fin = tryFinish();
+      } catch {
+        return { ok: false, waiting: true, retry: true, ticketId: req.ticketId, error: msg };
+      }
+    } else {
+      throw e;
+    }
+  }
+  if (!fin?.signature65) {
+    return { ok: false, waiting: true, ticketId: req.ticketId, error: 'd1 finish not ready' };
+  }
+  try {
+    const paid = await poolPost(api, {
+      action: 'pool3p_submit',
+      ticketId: req.ticketId,
+      signature65: fin.signature65,
+      hashHex: st.hashHex || k1.hashHex,
+    });
+    dropK1(req.ticketId);
+    fatalTickets.delete(req.ticketId);
+    return paid;
+  } catch (e) {
+    const msg = e?.message || String(e);
+    if (/hash mismatch|missing prepare|orbit/i.test(msg)) {
+      return { ok: false, waiting: true, ticketId: req.ticketId, error: msg };
     }
     throw e;
   }
-  const paid = await poolPost(api, {
-    action: 'pool3p_submit',
-    ticketId: req.ticketId,
-    signature65: fin.signature65,
-    hashHex: st.hashHex || k1.hashHex,
-  });
-  k1ByTicket.delete(req.ticketId);
-  fatalTickets.delete(req.ticketId);
-  return paid;
 }
 
 export async function contributeOpen(share, api = DEFAULT_POOL_API) {

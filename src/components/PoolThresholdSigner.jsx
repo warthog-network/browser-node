@@ -409,8 +409,15 @@ export default function PoolThresholdSigner() {
           <li className={steps.lindell ? 'is-done' : 'is-wait'}>
             <span>3</span> Lindell {steps.lindell ? 'combined' : 'waiting'}
           </li>
-          <li className={steps.paid ? 'is-done' : 'is-wait'}>
-            <span>4</span> {isOrbit ? 'orbit attested' : 'broadcast'}
+          <li className={steps.paid ? 'is-done' : room?.lastError ? 'is-wait' : 'is-wait'}>
+            <span>4</span>{' '}
+            {steps.paid
+              ? 'broadcast'
+              : room?.lastError
+                ? `held · ${String(room.lastError).slice(0, 48)}`
+                : isOrbit
+                  ? 'orbit attested'
+                  : 'broadcast'}
           </li>
         </ol>
       ) : null}
