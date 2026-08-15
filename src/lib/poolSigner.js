@@ -204,6 +204,55 @@ export async function fetchPool3pStatus(api = DEFAULT_POOL_API) {
   );
 }
 
+async function pointOfShare(hex) {
+  const { secp256k1 } = await import('@noble/curves/secp256k1');
+  const n = secp256k1.CURVE.n;
+  const h = String(hex || '').replace(/^0x/i, '');
+  let d = BigInt('0x' + h) % n;
+  if (d <= 0n) return '';
+  return Buffer.from(secp256k1.ProjectivePoint.BASE.multiply(d).toRawBytes(true)).toString('hex');
+}
+
+async function findBornCacheForRole(role, expectedP) {
+  const want = String(expectedP || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+  const match = async (c) => {
+    if (!c?.userShareHex) return false;
+    if (!want) return true;
+    const p = await pointOfShare(c.userShareHex);
+    return p.toLowerCase() === want;
+  };
+  const sid = await storageGet(ID_KEY);
+  if (typeof sid === 'string') {
+    const c = await readBornCache(sid, role);
+    if (await match(c)) return c;
+  }
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith('wart.poolSigner.born.') || !k.endsWith(`.${role}`)) continue;
+      const c = JSON.parse(localStorage.getItem(k) || 'null');
+      if (await match(c)) return c;
+    }
+  } catch {
+    /* */
+  }
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      const all = await chrome.storage.local.get(null);
+      for (const [k, v] of Object.entries(all || {})) {
+        if (!k.startsWith('wart.poolSigner.born.') || !v?.userShareHex) continue;
+        if (Number(v.role) !== Number(role) && !k.endsWith(`.${role}`)) continue;
+        if (await match(v)) return v;
+      }
+    }
+  } catch {
+    /* */
+  }
+  return null;
+}
+
 export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
   const r = await withRetry(() =>
     poolPost(api, {
@@ -212,6 +261,28 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
       role: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
     }),
   );
+  if (r.recoverVacant && (r.expectedP || r.vacantBorn)) {
+    const role = Number(r.recoverVacant || 1);
+    const P = r.expectedP || r.vacantBorn?.[String(role)]?.expectedP;
+    const cached = await findBornCacheForRole(role, P);
+    if (cached?.userShareHex) {
+      if (cached.signerId && cached.signerId !== signerId) {
+        await storageSet(ID_KEY, cached.signerId);
+      }
+      try {
+        await poolPost(api, {
+          action: 'pool3p_claim_born',
+          signerId: cached.signerId || signerId,
+          role,
+          shareHex: cached.userShareHex,
+        });
+      } catch {
+        /* still return cached so this tab can sign / rekey */
+      }
+      liveShare = { ...cached, clientBorn: true, waitlist: false, role };
+      return liveShare;
+    }
+  }
   if (r.needBirth && (r.role === 1 || r.role === 2)) {
     const cached = await readBornCache(signerId, r.role);
     if (cached?.userShareHex) {

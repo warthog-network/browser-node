@@ -304,7 +304,7 @@ export default function PoolThresholdSigner() {
               ? 'YOU hold this seat'
               : pool3p?.holder1
                 ? shortId(pool3p.holder1)
-                : 'vacant'}
+                : 'offline'}
           </strong>
           <span>
             {share?.role === 1
@@ -313,7 +313,9 @@ export default function PoolThresholdSigner() {
                 : 'Lindell finish'
               : pool3p?.holder1
                 ? 'assigned'
-                : 'waiting for a browser to birth d1'}
+                : pool3p?.seatsReady?.[1] || pool3p?.seatsReady?.['1']
+                  ? 'already born — open the original d1 profile (refresh makes a new orbit id, not d1)'
+                  : 'waiting for a browser to birth d1'}
           </span>
         </div>
         <div
@@ -327,7 +329,7 @@ export default function PoolThresholdSigner() {
               ? 'YOU hold this seat'
               : pool3p?.holder2
                 ? shortId(pool3p.holder2)
-                : 'vacant'}
+                : 'offline'}
           </strong>
           <span>
             {share?.role === 2
@@ -336,7 +338,9 @@ export default function PoolThresholdSigner() {
                 : 'additive share'
               : pool3p?.holder2
                 ? 'assigned'
-                : 'waiting for a browser to birth d2'}
+                : pool3p?.seatsReady?.[2] || pool3p?.seatsReady?.['2']
+                  ? 'already born — restore the original d2 profile'
+                  : 'waiting for a browser to birth d2'}
           </span>
         </div>
       </div>
