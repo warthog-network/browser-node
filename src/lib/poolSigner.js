@@ -1099,6 +1099,15 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
         });
         continue;
       }
+      if (/missing prepare|hash mismatch|recovery failed|do not submit v=0|R1 rejected/i.test(msg)) {
+        results.push({
+          ticketId: req.ticketId,
+          ok: false,
+          waiting: true,
+          error: msg,
+        });
+        continue;
+      }
       if (/missing Paillier|d1 hex missing|rekey denied|D1_/.test(msg)) {
         fatalTickets.set(req.ticketId, msg);
         results.push({ ticketId: req.ticketId, ok: false, fatal: true, error: msg });
@@ -1132,12 +1141,30 @@ export async function readStats() {
     lastTx: s?.lastTx || null,
     lastAt: s?.lastAt || null,
     lastMsg: s?.lastMsg || null,
+    history: Array.isArray(s?.history) ? s.history : [],
   };
 }
 
 export async function writeStats(partial) {
   const prev = await readStats();
-  const next = { ...prev, ...partial };
+  const history = Array.isArray(prev.history) ? prev.history.slice() : [];
+  const add = partial.appendPaid;
+  if (add?.txHash || add?.ticketId) {
+    const tx = add.txHash ? String(add.txHash) : '';
+    const dup = history.some(
+      (h) => (tx && h.txHash === tx) || (!tx && h.ticketId === add.ticketId && h.at === add.at),
+    );
+    if (!dup) {
+      history.unshift({
+        ticketId: add.ticketId || null,
+        txHash: tx || null,
+        amountE8: add.amountE8 || null,
+        at: add.at || Date.now(),
+      });
+    }
+  }
+  const next = { ...prev, ...partial, history: history.slice(0, 24) };
+  delete next.appendPaid;
   await storageSet(STATS_KEY, next);
   return next;
 }

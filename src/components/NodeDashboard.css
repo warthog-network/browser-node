@@ -229,6 +229,15 @@
   background: #3dcea8;
 }
 
+.pool-signer__status.is-ok .pool-signer__dot {
+  background: #3dce7a;
+}
+
+.pool-signer__tx {
+  font-size: 0.72rem;
+  word-break: break-all;
+}
+
 .pool-signer__status.is-err .pool-signer__dot {
   background: #f25c05;
 }
