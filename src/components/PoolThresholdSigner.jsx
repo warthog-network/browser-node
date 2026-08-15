@@ -13,7 +13,8 @@ import {
 } from '../lib/poolSigner.js';
 import { formatVerifyLine } from '../lib/poolVerify.js';
 
-const POLL_MS = 2500;
+const POLL_IDLE_MS = 2000;
+const POLL_HOT_MS = 800;
 const SIGNED_HOLD_MS = 12000;
 const TRANSIENT =
   /missing prepare|hash mismatch|recovery failed|do not submit v=0|R1 rejected|waiting|rebuild failed|not the current d[12]|orbit pack incomplete/i;
@@ -88,6 +89,7 @@ export default function PoolThresholdSigner() {
   const tickLock = useRef(false);
   const lastLog = useRef('');
   const signedUntil = useRef(0);
+  const hotRef = useRef(false);
 
   const putLog = (msg) => {
     if (!msg || msg === lastLog.current) return;
@@ -157,6 +159,7 @@ export default function PoolThresholdSigner() {
       const active = hb?.share || share;
       const { status: st, pool3p: p3, results, openCount, lastVerify } =
         await contributeOpen(active);
+      hotRef.current = Number(openCount || 0) > 0;
       if (lastVerify) setVerify(lastVerify);
       if (p3) {
         setPool3p((prev) => ({
@@ -271,9 +274,18 @@ export default function PoolThresholdSigner() {
 
   useEffect(() => {
     if (!share || !enabled) return undefined;
-    tick();
-    const id = setInterval(tick, POLL_MS);
-    return () => clearInterval(id);
+    let stopped = false;
+    let tid;
+    const loop = async () => {
+      await tick();
+      if (stopped) return;
+      tid = setTimeout(loop, hotRef.current ? POLL_HOT_MS : POLL_IDLE_MS);
+    };
+    loop();
+    return () => {
+      stopped = true;
+      clearTimeout(tid);
+    };
   }, [share, enabled, tick]);
 
   const toggle = async () => {
