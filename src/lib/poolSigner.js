@@ -799,6 +799,8 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
           ticketId: req.ticketId,
           signerId: share.signerId,
           d2Hex: share.userShareHex || share.shareHex,
+          amountE8: req.amountE8,
+          toAddress: req.toAddress,
         });
         r = d2.skipped
           ? { ok: true, orbitOnly: true, ticketId: req.ticketId, note: d2.error }

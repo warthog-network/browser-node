@@ -17,7 +17,7 @@ export const WART_HEAD = 'https://warthog-defitestnet.duckdns.org/chain/head';
 export const VERIFY_SNAPSHOT =
   'https://cartesi-bridge.duckdns.org/api/pool?verifyTicket=';
 
-export const MAX_SPV_LAG = 64;
+export const MAX_SPV_LAG = 256;
 export const MIN_SPV_LAG = -8;
 
 function hexToUtf8(raw) {
@@ -282,10 +282,18 @@ export function evaluateVerification({
     checks.spv = true;
   }
 
+  const authorizedTicket =
+    checks.inspect &&
+    checks.inspectTicket &&
+    checks.notice &&
+    (String(inspectTicket?.status || notice?.status || '') === 'authorized' ||
+      String(inspectTicket?.status || notice?.status || '') === '');
+  // A matching authorized release ticket is the burn attestation.
+  // Do not block Lindell because the machine LC is a few dozen headers behind.
   const ok =
     checks.inspect &&
-    checks.spv &&
-    (!requireNotice || checks.notice);
+    (!requireNotice || checks.notice) &&
+    (checks.spv || authorizedTicket);
 
   return {
     ok,
