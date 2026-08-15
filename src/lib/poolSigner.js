@@ -213,7 +213,7 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
     }),
   );
   if (r.needBirth && (r.role === 1 || r.role === 2)) {
-    const cached = readBornCache(signerId, r.role);
+    const cached = await readBornCache(signerId, r.role);
     if (cached?.userShareHex) {
       liveShare = cached;
       return cached;
@@ -226,16 +226,28 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
     return born;
   }
   if (r.clientBorn && (r.role === 1 || r.role === 2) && !r.needBirth) {
-    const cached = readBornCache(signerId, r.role);
+    const cached = await readBornCache(signerId, r.role);
     if (cached?.userShareHex) {
-      liveShare = { ...cached, ...r, userShareHex: cached.userShareHex, shareHex: cached.userShareHex, clientBorn: true, waitlist: false };
+      liveShare = {
+        ...r,
+        ...cached,
+        userShareHex: cached.userShareHex,
+        shareHex: cached.userShareHex,
+        clientBorn: true,
+        waitlist: false,
+        role: Number(r.role),
+      };
+      attachPaillier(liveShare, cached);
       return liveShare;
     }
-    const recovered = await tryRecoverFromPack(signerId, r.role, api, r);
-    if (recovered) {
-      writeBornCache(recovered);
-      liveShare = recovered;
-      return recovered;
+    // Pack is the *next* seat, not current d1. Never use it as d1 (no Paillier).
+    if (Number(r.role) === 2) {
+      const recovered = await tryRecoverFromPack(signerId, r.role, api, r);
+      if (recovered) {
+        writeBornCache(recovered);
+        liveShare = recovered;
+        return recovered;
+      }
     }
   }
   if (r.clientBorn && (r.role === 1 || r.role === 2) && liveShare?.role === r.role && liveShare.userShareHex) {
@@ -332,7 +344,7 @@ function bornCacheKey(signerId, role) {
   return `wart.poolSigner.born.${signerId}.${role}`;
 }
 
-function readBornCache(signerId, role) {
+function readBornCacheSync(signerId, role) {
   try {
     const raw = sessionStorage.getItem(bornCacheKey(signerId, role));
     return raw ? JSON.parse(raw) : null;
@@ -341,13 +353,38 @@ function readBornCache(signerId, role) {
   }
 }
 
-function writeBornCache(share) {
-  if (!share?.signerId || !share.userShareHex) return;
+async function readBornCache(signerId, role) {
+  const ss = readBornCacheSync(signerId, role);
+  if (ss?.userShareHex) return ss;
   try {
-    sessionStorage.setItem(bornCacheKey(share.signerId, share.role), JSON.stringify(share));
+    const stored = await storageGet(bornCacheKey(signerId, role));
+    if (stored?.userShareHex) return stored;
   } catch {
     /* */
   }
+  return ss;
+}
+
+function writeBornCache(share) {
+  if (!share?.signerId || !share.userShareHex) return;
+  const key = bornCacheKey(share.signerId, share.role);
+  try {
+    sessionStorage.setItem(key, JSON.stringify(share));
+  } catch {
+    /* */
+  }
+  void storageSet(key, share);
+}
+
+function attachPaillier(target, src) {
+  if (!target || !src) return target;
+  if (src.paillierLambda && !target.paillierLambda) {
+    target.paillierLambda = src.paillierLambda;
+    target.paillierMu = src.paillierMu;
+    target.paillierN = src.paillierN || target.paillierN;
+    target.paillierG = src.paillierG || target.paillierG;
+  }
+  return target;
 }
 
 async function tryRecoverFromPack(signerId, role, api, hint) {
@@ -527,7 +564,11 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
       }),
     );
     let next = share;
-    if ((r.share?.needBirth || r.needBirth) && (Number(r.role || r.share?.role) === 1 || Number(r.role || r.share?.role) === 2) && !share.userShareHex) {
+    const assigned = Number(r.role || r.share?.role || 0);
+    if (
+      (assigned === 1 || assigned === 2) &&
+      (!share.userShareHex || (assigned === 1 && !share.paillierLambda))
+    ) {
       next = await enrollSigner(share.signerId, api);
       return { ...r, share: next };
     }
@@ -571,32 +612,89 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
 }
 
 const k1ByTicket = new Map();
+const fatalTickets = new Map();
+
+async function ensureD1Paillier(share, api) {
+  if (share?.paillierN && share?.paillierLambda) return share;
+  const cached = await readBornCache(share.signerId, 1);
+  if (cached?.paillierLambda && cached.userShareHex === share.userShareHex) {
+    attachPaillier(share, cached);
+    if (share.paillierLambda) {
+      writeBornCache(share);
+      return share;
+    }
+  }
+  if (!share?.userShareHex) {
+    const err = new Error(
+      'd1 hex missing in this tab — use the original Chrome/Brave tab that birthed d1',
+    );
+    err.code = 'D1_NO_HEX';
+    throw err;
+  }
+  const { generateRandomKeys } = await import('paillier-bigint');
+  const { publicKey: pk, privateKey: sk } = await generateRandomKeys(1024);
+  const enc = pk.encrypt(BigInt('0x' + String(share.userShareHex).replace(/^0x/i, '')));
+  const ack = await poolPost(api, {
+    action: 'pool3p_rekey_d1',
+    signerId: share.signerId,
+    d1Hex: share.userShareHex,
+    encD1: enc.toString(),
+    paillierN: pk.n.toString(),
+    paillierG: pk.g.toString(),
+  });
+  if (!ack?.ok) {
+    const err = new Error(ack?.error || 'd1 Paillier rekey failed');
+    err.code = 'D1_REKEY_FAILED';
+    throw err;
+  }
+  share.paillierLambda = sk.lambda.toString();
+  share.paillierMu = sk.mu.toString();
+  share.paillierN = pk.n.toString();
+  share.paillierG = pk.g.toString();
+  writeBornCache(share);
+  liveShare = share;
+  return share;
+}
 
 async function sign3pAsRole1(share, req, api) {
+  if (fatalTickets.has(req.ticketId)) {
+    return { ok: false, fatal: true, ticketId: req.ticketId, error: fatalTickets.get(req.ticketId) };
+  }
   const { clientSignRound1, clientSignFinish } = await import('./pool3pClient.js');
+  let ready;
+  try {
+    ready = await ensureD1Paillier(share, api);
+  } catch (e) {
+    const msg = e?.message || String(e);
+    fatalTickets.set(req.ticketId, msg);
+    return { ok: false, fatal: true, ticketId: req.ticketId, error: msg };
+  }
   let k1 = k1ByTicket.get(req.ticketId);
-  if (!k1) {
-    // Lost RAM k1 (tab reload). Re-issue R1 so Lindell can rerun with a key we hold.
+  let st = await poolPost(api, { action: 'pool3p_ticket', ticketId: req.ticketId });
+  if (!k1 || !st.haveR1) {
     const prep = await poolPost(api, {
       action: 'pool3p_prepare',
       ticketId: req.ticketId,
-      toAddress: req.toAddress,
-      amountE8: req.amountE8,
+      toAddress: req.toAddress || st.toAddress,
+      amountE8: req.amountE8 || st.amountE8,
     });
     const rnd = clientSignRound1();
     k1 = { ...rnd, hashHex: prep.hashHex };
-    k1ByTicket.set(req.ticketId, k1);
-    await poolPost(api, {
+    const r1 = await poolPost(api, {
       action: 'pool3p_r1',
       ticketId: req.ticketId,
-      signerId: share.signerId,
+      signerId: ready.signerId,
       R1Hex: rnd.R1Hex,
       hashHex: prep.hashHex,
-      amountE8: req.amountE8,
-      toAddress: req.toAddress,
+      amountE8: req.amountE8 || st.amountE8,
+      toAddress: req.toAddress || st.toAddress,
     });
+    if (r1?.ok === false) {
+      return { ok: false, ticketId: req.ticketId, error: r1.error || 'R1 rejected', waiting: true };
+    }
+    k1ByTicket.set(req.ticketId, k1);
+    st = await poolPost(api, { action: 'pool3p_ticket', ticketId: req.ticketId });
   }
-  const st = await poolPost(api, { action: 'pool3p_ticket', ticketId: req.ticketId });
   if (!st.hasPartial) {
     return { ok: true, waiting: true, status: st.status, ticketId: req.ticketId };
   }
@@ -605,7 +703,7 @@ async function sign3pAsRole1(share, req, api) {
     rHex: st.rHex,
     ciphertext: st.ciphertext,
     hashHex: k1.hashHex,
-    clientSecret: share,
+    clientSecret: ready,
   });
   const paid = await poolPost(api, {
     action: 'pool3p_submit',
@@ -614,6 +712,7 @@ async function sign3pAsRole1(share, req, api) {
     hashHex: k1.hashHex,
   });
   k1ByTicket.delete(req.ticketId);
+  fatalTickets.delete(req.ticketId);
   return paid;
 }
 
@@ -706,6 +805,10 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
           : d2;
       } else if (share.scheme?.includes('3p-ecdsa') && role === 1) {
         r = await sign3pAsRole1(share, req, api);
+        if (r?.fatal) {
+          results.push({ ticketId: req.ticketId, ...r, verify });
+          continue;
+        }
       } else {
         r = await withRetry(() =>
           poolPost(api, {
@@ -728,6 +831,11 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
           orbitOnly: true,
           error: msg,
         });
+        continue;
+      }
+      if (/missing Paillier|d1 hex missing|rekey denied|D1_/.test(msg)) {
+        fatalTickets.set(req.ticketId, msg);
+        results.push({ ticketId: req.ticketId, ok: false, fatal: true, error: msg });
         continue;
       }
       if (isEpochDead(e) || e?.code === 'SEAT_ROTATED') {

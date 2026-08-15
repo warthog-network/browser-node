@@ -154,6 +154,12 @@ export default function PoolThresholdSigner() {
         );
       }
 
+      if (last.fatal) {
+        setPhase('error');
+        setError(last.error || 'd1 cannot finish this ticket from this tab');
+        setLog(last.error || 'fatal: original d1 dealer tab required');
+        return;
+      }
       if (last.paid || last.txHash) {
         setPhase('signed');
         setLog(
@@ -181,7 +187,7 @@ export default function PoolThresholdSigner() {
       setPhase('error');
       setError(msg);
       if (
-        /EPOCH_ROTATED|SEAT_ROTATED|share is dead|mismatch|not issued|does not own|share material/i.test(
+        /EPOCH_ROTATED|SEAT_ROTATED|share is dead|mismatch|not issued|does not own|share material|missing Paillier/i.test(
           msg,
         )
       ) {
