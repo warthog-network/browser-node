@@ -265,34 +265,39 @@
   gap: 0.35rem;
   font-size: 0.72rem;
   color: var(--muted);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
-  padding: 0.28rem 0.4rem;
+  padding: 0.32rem 0.45rem;
+  background: rgba(255, 255, 255, 0.03);
+  min-height: 2rem;
 }
 
 .pool-signer__steps li span {
   display: inline-flex;
-  width: 1.05rem;
-  height: 1.05rem;
+  width: 1.15rem;
+  height: 1.15rem;
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
-  font-size: 0.62rem;
-  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
 }
 
 .pool-signer__steps li.is-done {
-  color: #c8f0d4;
-  border-color: rgba(61, 206, 122, 0.45);
+  color: #102016;
+  background: #3dce7a;
+  border-color: #3dce7a;
 }
 
 .pool-signer__steps li.is-done span {
-  background: #3dce7a;
-  color: #102016;
+  background: #102016;
+  color: #3dce7a;
 }
 
 .pool-signer__steps li.is-wait span {
-  background: rgba(253, 185, 19, 0.2);
+  background: rgba(253, 185, 19, 0.22);
   color: #fdb913;
 }
 

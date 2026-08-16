@@ -315,9 +315,18 @@ export default function PoolThresholdSigner() {
     setPhase(next ? 'online' : 'paused');
   };
 
-  const open = (status?.open || pool3p?.open || []).filter(
-    (r) => !r.labDemo && !/^lab-demo-/.test(String(r.ticketId || '')),
-  );
+  const open = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const r of [...(pool3p?.open || []), ...(status?.open || [])]) {
+      const id = String(r?.ticketId || '');
+      if (!id || seen.has(id)) continue;
+      if (r.labDemo || /^lab-demo-/.test(id)) continue;
+      seen.add(id);
+      out.push(r);
+    }
+    return out;
+  }, [pool3p?.open, status?.open]);
   const liveOrbit = pool3p?.orbit?.live || [];
   const liveN = pool3p?.orbit?.liveCount ?? liveOrbit.length;
 
@@ -341,11 +350,11 @@ export default function PoolThresholdSigner() {
   }, [pool3p?.paid, stats.history]);
 
   const room = open[0] || null;
-  const steps = room?.steps || {
-    d1: !!room?.haveR1,
-    d2: !!room?.haveD2,
-    lindell: !!room?.hasPartial,
-    paid: false,
+  const steps = {
+    d1: !!(room?.steps?.d1 ?? room?.haveR1),
+    d2: !!(room?.steps?.d2 ?? room?.haveD2),
+    lindell: !!(room?.steps?.lindell ?? room?.hasPartial),
+    paid: !!(room?.steps?.paid || phase === 'signed'),
   };
   const isOrbit = !share || share.waitlist || Number(share.role) === 0;
   const rotateDue = useRotateDue(pool3p?.rotation);
@@ -460,29 +469,29 @@ export default function PoolThresholdSigner() {
         </div>
       </div>
 
-      {room ? (
-        <ol className="pool-signer__steps" aria-label="ceremony progress">
-          <li className={steps.d1 ? 'is-done' : 'is-wait'}>
-            <span>1</span> d1 R1 {steps.d1 ? 'in' : 'waiting'}
-          </li>
-          <li className={steps.d2 ? 'is-done' : 'is-wait'}>
-            <span>2</span> d2 share {steps.d2 ? 'in' : 'waiting'}
-          </li>
-          <li className={steps.lindell ? 'is-done' : 'is-wait'}>
-            <span>3</span> Lindell {steps.lindell ? 'combined' : 'waiting'}
-          </li>
-          <li className={steps.paid ? 'is-done' : room?.lastError ? 'is-wait' : 'is-wait'}>
-            <span>4</span>{' '}
-            {steps.paid
-              ? 'broadcast'
-              : room?.lastError
-                ? `held · ${String(room.lastError).slice(0, 48)}`
-                : isOrbit
+      <ol className="pool-signer__steps" aria-label="ceremony progress">
+        <li className={steps.d1 ? 'is-done' : 'is-wait'}>
+          <span>1</span> d1 R1 {steps.d1 ? 'in' : room ? 'waiting' : 'idle'}
+        </li>
+        <li className={steps.d2 ? 'is-done' : 'is-wait'}>
+          <span>2</span> d2 share {steps.d2 ? 'in' : room ? 'waiting' : 'idle'}
+        </li>
+        <li className={steps.lindell ? 'is-done' : 'is-wait'}>
+          <span>3</span> Lindell {steps.lindell ? 'combined' : room ? 'waiting' : 'idle'}
+        </li>
+        <li className={steps.paid ? 'is-done' : 'is-wait'}>
+          <span>4</span>{' '}
+          {steps.paid
+            ? 'broadcast'
+            : room?.lastError
+              ? `held · ${String(room.lastError).slice(0, 48)}`
+              : room
+                ? isOrbit
                   ? 'orbit attested'
-                  : 'broadcast'}
-          </li>
-        </ol>
-      ) : null}
+                  : 'broadcast'
+                : 'idle'}
+        </li>
+      </ol>
 
       <p className="pool-signer__meta">{log}</p>
       {pool3p?.address ? (
