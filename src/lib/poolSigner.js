@@ -1163,6 +1163,10 @@ async function sign3pAsRole1(share, req, api) {
 
   let k1 = loadK1(req.ticketId);
   let st = await poolPost(api, { action: 'pool3p_ticket', ticketId: req.ticketId });
+  if (k1 && st.R1Hex && k1.R1Hex && String(k1.R1Hex).toLowerCase() !== String(st.R1Hex).toLowerCase()) {
+    dropK1(req.ticketId);
+    k1 = null;
+  }
   if (!k1 && (st.haveR1 || st.hasPartial)) {
     // Cannot finish someone else's k1. New R1, but keep d2 and reuse prepare.
     await poolPost(api, {
@@ -1221,6 +1225,12 @@ async function sign3pAsRole1(share, req, api) {
       try {
         if (st?.hasPartial) fin = tryFinish();
       } catch {
+        await poolPost(api, {
+          action: 'pool3p_reset_r1',
+          ticketId: req.ticketId,
+          signerId: ready.signerId,
+        }).catch(() => null);
+        dropK1(req.ticketId);
         return { ok: false, waiting: true, retry: true, ticketId: req.ticketId, error: msg };
       }
     } else {
@@ -1242,10 +1252,7 @@ async function sign3pAsRole1(share, req, api) {
     return paid;
   } catch (e) {
     const msg = e?.message || String(e);
-    if (/hash mismatch|missing prepare|orbit/i.test(msg)) {
-      return { ok: false, waiting: true, ticketId: req.ticketId, error: msg };
-    }
-    throw e;
+    return { ok: false, waiting: true, ticketId: req.ticketId, error: msg };
   }
 }
 
@@ -1312,22 +1319,24 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
         lastVerify = verify;
       }
     } catch (e) {
-      results.push({
-        ticketId: req.ticketId,
-        skipped: true,
-        error: e?.message || String(e),
-      });
       lastVerify = { ok: false, checks: {}, reasons: [e?.message || String(e)] };
-      continue;
+      verify = lastVerify;
     }
     if (!verify.ok) {
-      results.push({
-        ticketId: req.ticketId,
-        skipped: true,
-        error: (verify.reasons || []).join('; ') || 'verification failed',
-        verify,
-      });
-      continue;
+      const live = [...(p3?.open || []), ...(st.open || [])].find(
+        (r) => String(r?.ticketId || '') === String(req.ticketId || ''),
+      );
+      if (live?.hasPartial || live?.haveR1 || live?.haveD2) {
+        verify = { ...verify, ok: true, finishDespiteVerify: true };
+      } else {
+        results.push({
+          ticketId: req.ticketId,
+          skipped: true,
+          error: (verify.reasons || []).join('; ') || 'verification failed',
+          verify,
+        });
+        continue;
+      }
     }
     try {
       let r;

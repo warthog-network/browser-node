@@ -231,7 +231,13 @@ export function evaluateVerification({
   }
 
   if (req?.poolAddress && inspectPool?.poolAddress) {
-    if (!addrsMatch(req.poolAddress, inspectPool.poolAddress)) {
+    const known = [
+      inspectPool.poolAddress,
+      inspectPool.previousAddress,
+      inspectPool.pendingNext?.address || inspectPool.pendingNext,
+    ].filter(Boolean);
+    const liveOrRotate = known.some((a) => addrsMatch(req.poolAddress, a));
+    if (!liveOrRotate) {
       const known3p = 'ee6cfa285ab4c83c08622dfb1c64d75759d86ec13b18ec03';
       const knownOld = '966d1012941b1fb41d4fff2cadefca7115237dc1818a7cd7';
       const ticket3p = addrsMatch(req.poolAddress, known3p);
