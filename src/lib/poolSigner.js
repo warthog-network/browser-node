@@ -892,15 +892,31 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
     const iAmHolder1 = r.holder1 === share.signerId || r.holders?.['1']?.signerId === share.signerId;
     const iAmHolder2 = r.holder2 === share.signerId || r.holders?.['2']?.signerId === share.signerId;
     const wantRole = iAmHolder1 ? 1 : iAmHolder2 ? 2 : assigned;
+    const seal0 = r.seal || next.seal;
+    let hexMatchesLive = true;
+    if ((wantRole === 1 || wantRole === 2) && next.userShareHex && seal0) {
+      try {
+        const { verifyShareSeal } = await import('./pool3pClient.js');
+        verifyShareSeal({
+          shareHex: next.userShareHex,
+          role: wantRole,
+          seal: seal0,
+        });
+        hexMatchesLive = true;
+      } catch {
+        hexMatchesLive = false;
+      }
+    }
     if (
       (wantRole === 1 || wantRole === 2) &&
-      (share.waitlist ||
-        Number(share.role) !== wantRole ||
-        !share.userShareHex ||
-        (wantRole === 1 && !share.paillierLambda))
+      (next.waitlist ||
+        Number(next.role) !== wantRole ||
+        !next.userShareHex ||
+        !hexMatchesLive ||
+        (wantRole === 1 && hexMatchesLive && !next.paillierLambda))
     ) {
       next = await enrollSigner(share.signerId, api);
-      return { ...r, share: next, shareUpdated: !next.waitlist };
+      if (next?.userShareHex) return { ...r, share: next, shareUpdated: true };
     }
     const vacantSeat =
       !(r.holder1 || r.holders?.['1']?.signerId) ||
@@ -923,7 +939,7 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
       }
     }
     if (r.share) {
-      const applied = await applyIncomingShare(r.share, share);
+      const applied = await applyIncomingShare(r.share, next);
       if (applied) next = applied;
     }
     const seal = r.seal || next.seal;

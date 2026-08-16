@@ -277,14 +277,34 @@ export default function PoolThresholdSigner() {
     let stopped = false;
     let tid;
     const loop = async () => {
-      await tick();
+      try {
+        await tick();
+      } catch {
+        /* keep polling — a thrown tick used to kill the loop until refresh */
+      }
       if (stopped) return;
-      tid = setTimeout(loop, hotRef.current ? POLL_HOT_MS : POLL_IDLE_MS);
+      const hidden =
+        typeof document !== 'undefined' && document.visibilityState === 'hidden';
+      const wait = hidden
+        ? POLL_IDLE_MS
+        : hotRef.current
+          ? POLL_HOT_MS
+          : POLL_IDLE_MS;
+      tid = setTimeout(loop, wait);
     };
+    const wake = () => {
+      if (stopped || tickLock.current) return;
+      clearTimeout(tid);
+      loop();
+    };
+    document.addEventListener('visibilitychange', wake);
+    window.addEventListener('focus', wake);
     loop();
     return () => {
       stopped = true;
       clearTimeout(tid);
+      document.removeEventListener('visibilitychange', wake);
+      window.removeEventListener('focus', wake);
     };
   }, [share, enabled, tick]);
 
