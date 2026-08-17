@@ -1327,8 +1327,10 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
         (r) => String(r?.ticketId || '') === String(req.ticketId || ''),
       );
       const reasons = (verify.reasons || []).map((r) => String(r));
-      const inspectDown = reasons.some((r) =>
-        /inspect\/pool is not ok|inspect HTTP|Bad Gateway|no pool report/i.test(r),
+      const inspectUnusable = reasons.some((r) =>
+        /inspect\/pool is not ok|inspect HTTP|Bad Gateway|no pool report|inspect poolAddress/i.test(
+          r,
+        ),
       );
       const prepared =
         live &&
@@ -1337,7 +1339,7 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
           live.haveD2 ||
           live.prep?.hashHex ||
           live.hashHex ||
-          (inspectDown && live.amountE8 && live.toAddress));
+          (inspectUnusable && live.amountE8 && live.toAddress));
       if (prepared) {
         verify = { ...verify, ok: true, finishDespiteVerify: true };
       } else {
