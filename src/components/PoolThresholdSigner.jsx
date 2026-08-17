@@ -511,79 +511,126 @@ export default function PoolThresholdSigner() {
         )}
       </p>
 
-      {!enabled ? null : <div className="pool-signer__seats" aria-label="d1 and d2 holders">
-        <div
-          className={`pool-signer__seat${share?.role === 1 ? ' is-you' : ''}${
-            pool3p?.holder1 ? ' is-held' : ''
-          }`}
-        >
-          <span className="pool-signer__seat-k">d1</span>
-          <strong>
-            {share?.role === 1
-              ? 'YOU'
-              : pool3p?.holder1
-                ? shortId(pool3p.holder1)
-                : 'vacant'}
-          </strong>
-          <span>
-            {share?.role === 1
-              ? 'Lindell finish'
-              : pool3p?.holder1
-                ? pool3p.d1Live
-                  ? 'live'
-                  : 'assigned'
-                : 'will rebuild from orbit pack'}
-          </span>
+      {enabled ? (
+        <div className="pool-signer__seats" aria-label="d1 and d2 holders">
+          <div
+            className={`pool-signer__seat${share?.role === 1 ? ' is-you' : ''}${
+              pool3p?.holder1 ? ' is-held' : ''
+            }`}
+          >
+            <span className="pool-signer__seat-k">d1</span>
+            <strong>
+              {share?.role === 1
+                ? 'YOU'
+                : pool3p?.holder1
+                  ? shortId(pool3p.holder1)
+                  : 'vacant'}
+            </strong>
+            <span>
+              {share?.role === 1
+                ? 'Lindell finish'
+                : pool3p?.holder1
+                  ? pool3p.d1Live
+                    ? 'live'
+                    : 'assigned'
+                  : 'will rebuild from orbit pack'}
+            </span>
+          </div>
+          <div
+            className={`pool-signer__seat${share?.role === 2 ? ' is-you' : ''}${
+              pool3p?.holder2 ? ' is-held' : ''
+            }`}
+          >
+            <span className="pool-signer__seat-k">d2</span>
+            <strong>
+              {share?.role === 2
+                ? 'YOU'
+                : pool3p?.holder2
+                  ? shortId(pool3p.holder2)
+                  : 'vacant'}
+            </strong>
+            <span>
+              {share?.role === 2
+                ? 'additive share'
+                : pool3p?.holder2
+                  ? pool3p.d2Live
+                    ? 'live'
+                    : 'assigned'
+                  : 'will rebuild from orbit pack'}
+            </span>
+          </div>
         </div>
-        <div
-          className={`pool-signer__seat${share?.role === 2 ? ' is-you' : ''}${
-            pool3p?.holder2 ? ' is-held' : ''
-          }`}
-        >
-          <span className="pool-signer__seat-k">d2</span>
-          <strong>
-            {share?.role === 2
-              ? 'YOU'
-              : pool3p?.holder2
-                ? shortId(pool3p.holder2)
-                : 'vacant'}
-          </strong>
-          <span>
-            {share?.role === 2
-              ? 'additive share'
-              : pool3p?.holder2
-                ? pool3p.d2Live
-                  ? 'live'
-                  : 'assigned'
-                : 'will rebuild from orbit pack'}
-          </span>
-        </div>
-      </div>}
+      ) : null}
 
       {enabled ? (
-      <ol className="pool-signer__steps" aria-label="ceremony progress">
-        <li className={steps.d1 ? 'is-done' : 'is-wait'}>
-          <span>1</span> d1 R1 {steps.d1 ? 'in' : room ? 'waiting' : 'idle'}
-        </li>
-        <li className={steps.d2 ? 'is-done' : 'is-wait'}>
-          <span>2</span> d2 share {steps.d2 ? 'in' : room ? 'waiting' : 'idle'}
-        </li>
-        <li className={steps.lindell ? 'is-done' : 'is-wait'}>
-          <span>3</span> Lindell {steps.lindell ? 'combined' : room ? 'waiting' : 'idle'}
-        </li>
-        <li className={steps.paid ? 'is-done' : 'is-wait'}>
-          <span>4</span>{' '}
-          {steps.paid
-            ? 'broadcast'
-            : room?.lastError
-              ? `held · ${String(room.lastError).slice(0, 48)}`
-              : room
-                ? isOrbit
-                  ? 'orbit attested'
-                  : 'broadcast'
-                : 'idle'}
-        </li>
-      </ol>
+        <>
+          <ol className="pool-signer__steps" aria-label="ceremony progress">
+            <li className={steps.d1 ? 'is-done' : 'is-wait'}>
+              <span>1</span> d1 R1 {steps.d1 ? 'in' : room ? 'waiting' : 'idle'}
+            </li>
+            <li className={steps.d2 ? 'is-done' : 'is-wait'}>
+              <span>2</span> d2 share {steps.d2 ? 'in' : room ? 'waiting' : 'idle'}
+            </li>
+            <li className={steps.lindell ? 'is-done' : 'is-wait'}>
+              <span>3</span> Lindell {steps.lindell ? 'combined' : room ? 'waiting' : 'idle'}
+            </li>
+            <li className={steps.paid ? 'is-done' : 'is-wait'}>
+              <span>4</span>{' '}
+              {steps.paid
+                ? 'broadcast'
+                : room?.lastError
+                  ? `held · ${String(room.lastError).slice(0, 48)}`
+                  : room
+                    ? isOrbit
+                      ? 'orbit attested'
+                      : 'broadcast'
+                    : 'idle'}
+            </li>
+          </ol>
+          {d1Pack && !d1Pack.ready ? (
+            <p className="pool-signer__meta is-warn">
+              d1 pack not on this orbit ({d1Pack.liveCovered || 0}/
+              {d1Pack.liveNeed || 0} live) — the d1 tab must republish
+            </p>
+          ) : null}
+          {d2Pack && !d2Pack.ready ? (
+            <p className="pool-signer__meta is-warn">
+              d2 pack not on this orbit ({d2Pack.liveCovered || 0}/
+              {d2Pack.liveNeed || 0} live)
+            </p>
+          ) : null}
+          {verify && (
+            <p className={`pool-signer__meta${verify.ok === false ? ' is-warn' : ''}`}>
+              {formatVerifyLine(verify)}
+            </p>
+          )}
+          {open.length > 0 && (
+            <p className="pool-signer__meta">
+              Open room: {open.map((r) => shortTicket(r.ticketId)).join(' · ')}
+            </p>
+          )}
+          <ul className="pool-signer__slots" aria-label="live orbit">
+            {liveOrbit.length === 0 ? (
+              <li>No live orbit yet — this tab appears after the first heartbeat.</li>
+            ) : (
+              liveOrbit.map((id) => (
+                <li key={id} className={id === share?.signerId ? 'is-me' : undefined}>
+                  {shortId(id)}
+                  {id === pool3p?.holder1 ? ' · d1' : ''}
+                  {id === pool3p?.holder2 ? ' · d2' : ''}
+                  {id === 'pool-3p-orbit-vps' ? ' · VPS' : ''}
+                  {id !== pool3p?.holder1 &&
+                  id !== pool3p?.holder2 &&
+                  id !== 'pool-3p-orbit-vps'
+                    ? ' · orbit'
+                    : ''}
+                  {id === share?.signerId ? ' · you' : ''}
+                </li>
+              ))
+            )}
+          </ul>
+        </>
+      ) : null}
 
       <p className="pool-signer__meta">{log}</p>
       {pool3p?.address ? (
@@ -609,51 +656,7 @@ export default function PoolThresholdSigner() {
       ) : (
         <p className="pool-signer__rotate">Q rotate · waiting for coordinator clock</p>
       )}
-      {d1Pack && !d1Pack.ready ? (
-        <p className="pool-signer__meta is-warn">
-          d1 pack not on this orbit ({d1Pack.liveCovered || 0}/
-          {d1Pack.liveNeed || 0} live) — the d1 tab must republish
-        </p>
-      ) : null}
-      {d2Pack && !d2Pack.ready ? (
-        <p className="pool-signer__meta is-warn">
-          d2 pack not on this orbit ({d2Pack.liveCovered || 0}/
-          {d2Pack.liveNeed || 0} live)
-        </p>
-      ) : null}
-      {verify && (
-        <p className={`pool-signer__meta${verify.ok === false ? ' is-warn' : ''}`}>
-          {formatVerifyLine(verify)}
-        </p>
-      )}
-      {open.length > 0 && (
-        <p className="pool-signer__meta">
-          Open room: {open.map((r) => shortTicket(r.ticketId)).join(' · ')}
-        </p>
-      )}
       {error ? <p className="dash__error">{error}</p> : null}
-
-      <ul className="pool-signer__slots" aria-label="live orbit">
-        {liveOrbit.length === 0 ? (
-          <li>No live orbit yet — this tab appears after the first heartbeat.</li>
-        ) : (
-          liveOrbit.map((id) => (
-            <li key={id} className={id === share?.signerId ? 'is-me' : undefined}>
-              {shortId(id)}
-              {id === pool3p?.holder1 ? ' · d1' : ''}
-              {id === pool3p?.holder2 ? ' · d2' : ''}
-              {id === 'pool-3p-orbit-vps' ? ' · VPS' : ''}
-              {id !== pool3p?.holder1 &&
-              id !== pool3p?.holder2 &&
-              id !== 'pool-3p-orbit-vps'
-                ? ' · orbit'
-                : ''}
-              {id === share?.signerId ? ' · you' : ''}
-            </li>
-          ))
-        )}
-      </ul>
-      ) : null}
 
       <details className="pool-signer__history" open={paidList.length > 0}>
         <summary>
