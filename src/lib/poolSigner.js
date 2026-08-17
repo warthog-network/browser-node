@@ -1326,13 +1326,25 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
       const live = [...(p3?.open || []), ...(st.open || [])].find(
         (r) => String(r?.ticketId || '') === String(req.ticketId || ''),
       );
-      if (live?.hasPartial || live?.haveR1 || live?.haveD2) {
+      const reasons = (verify.reasons || []).map((r) => String(r));
+      const inspectDown = reasons.some((r) =>
+        /inspect\/pool is not ok|inspect HTTP|Bad Gateway|no pool report/i.test(r),
+      );
+      const prepared =
+        live &&
+        (live.hasPartial ||
+          live.haveR1 ||
+          live.haveD2 ||
+          live.prep?.hashHex ||
+          live.hashHex ||
+          (inspectDown && live.amountE8 && live.toAddress));
+      if (prepared) {
         verify = { ...verify, ok: true, finishDespiteVerify: true };
       } else {
         results.push({
           ticketId: req.ticketId,
           skipped: true,
-          error: (verify.reasons || []).join('; ') || 'verification failed',
+          error: reasons.join('; ') || 'verification failed',
           verify,
         });
         continue;
