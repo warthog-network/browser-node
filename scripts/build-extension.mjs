@@ -442,11 +442,11 @@ npm run extension:package    # also write public/downloads/….zip for the websi
 
 ### From the website zip
 
-1. Download \`/downloads/warthog-browser-node-extension.zip\` from the deployed site.
-2. Unzip — you get a folder named \`warthog-browser-node\`.
+1. Download \`/downloads/warthog_node_extension.zip\` from the deployed site.
+2. Unzip — you get one folder named \`warthog_node_extension\` (contains \`manifest.json\`).
 3. Open \`chrome://extensions\` (or \`brave://extensions\`).
 4. Enable **Developer mode**.
-5. **Load unpacked** → select the \`warthog-browser-node\` folder (contains \`manifest.json\`).
+5. **Load unpacked** → select \`warthog_node_extension\`.
 6. Pin the extension, click the toolbar icon → **side panel** opens on the right.
 7. Confirm **Isolation OK** + **Shared memory OK**, then **Start node**.
 

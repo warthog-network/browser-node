@@ -50,6 +50,12 @@
     Cross-Origin-Embedder-Policy = "require-corp"
     Cache-Control = "public, max-age=3600"
 
+# Old zip name → flattened warthog_node_extension.zip
+[[redirects]]
+  from = "/downloads/warthog-browser-node-extension.zip"
+  to = "/downloads/warthog_node_extension.zip"
+  status = 302
+
 # Extension zip download (same-origin; short cache so rebuilds show up)
 [[headers]]
   for = "/downloads/*"

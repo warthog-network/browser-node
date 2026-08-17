@@ -1151,14 +1151,14 @@ export default function WasmBrowserNode() {
           <div className="ext-download__actions">
             <a
               className="btn btn--ghost"
-              href="/downloads/warthog-browser-node-extension.zip"
-              download="warthog-browser-node-extension.zip"
+              href="/downloads/warthog_node_extension.zip"
+              download="warthog_node_extension.zip"
             >
               Download extension (.zip)
             </a>
           </div>
           <ol className="ext-download__steps">
-            <li>Unzip the archive (folder <code>warthog-browser-node</code>).</li>
+            <li>Unzip the archive (one folder: <code>warthog_node_extension</code>).</li>
             <li>Open <code>chrome://extensions</code> (or <code>brave://extensions</code>).</li>
             <li>Enable <strong>Developer mode</strong> → <strong>Load unpacked</strong>.</li>
             <li>Select the unzipped folder that contains <code>manifest.json</code>.</li>

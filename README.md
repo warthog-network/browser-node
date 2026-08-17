@@ -30,10 +30,10 @@ Same full WASM node as a **loadable unpacked extension**. Extension pages get CO
 Netlify build runs `extension:package` and publishes:
 
 ```text
-/downloads/warthog-browser-node-extension.zip
+/downloads/warthog_node_extension.zip
 ```
 
-Install: unzip → `chrome://extensions` → Developer mode → **Load unpacked** → select the `warthog-browser-node/` folder (contains `manifest.json`). The website UI also links this zip.
+Install: unzip → `chrome://extensions` → Developer mode → **Load unpacked** → select `warthog_node_extension/` (contains `manifest.json`). The website UI also links this zip.
 
 Chrome will **not** install the extension from a URL alone; zip + Load unpacked (or later Chrome Web Store) is required.
 
@@ -52,10 +52,10 @@ Optional GitHub Release (same artifact as the site):
 
 ```bash
 npm run extension:package
-gh release create browser-node-extension-v1.3.0 \
-  public/downloads/warthog-browser-node-extension.zip \
-  --title "Browser Node extension v1.3.0" \
-  --notes "Unzip → Load unpacked → select warthog-browser-node/"
+gh release create browser-node-extension-v1.5.1 \
+  public/downloads/warthog_node_extension.zip \
+  --title "Browser Node extension v1.5.1" \
+  --notes "Unzip → Load unpacked → select warthog_node_extension/"
 ```
 
 Details: [`extension/README.md`](extension/README.md). Rebuild after UI/WASM changes.
