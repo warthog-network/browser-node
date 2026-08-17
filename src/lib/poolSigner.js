@@ -8,6 +8,7 @@
 export const DEFAULT_POOL_API = 'https://cartesi-bridge.duckdns.org/api/pool';
 
 const ENABLED_KEY = 'wart.poolSigner.enabled';
+const PANEL_KEY = 'wart.poolSigner.panelOpen';
 const STATS_KEY = 'wart.poolSigner.stats';
 const ID_KEY = 'wart.poolSigner.signerId';
 const SHARE_KEY = 'wart.poolSigner.enrolledShare';
@@ -1455,14 +1456,40 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
   return { status: st, pool3p: p3, results, openCount: actionable.length, lastVerify };
 }
 
+export async function hasStoredSignerId() {
+  const id = await storageGet(ID_KEY);
+  return typeof id === 'string' && id.length >= 16;
+}
+
 export async function readEnabled() {
   const v = await storageGet(ENABLED_KEY);
-  if (v === undefined || v === null) return true;
+  if (v === undefined || v === null) {
+    // Already-enrolled tabs keep signing. Fresh node-only tabs stay off
+    // until the operator opts in — running the WASM node is not a signer.
+    return hasStoredSignerId();
+  }
   return Boolean(v);
 }
 
 export async function writeEnabled(on) {
   await storageSet(ENABLED_KEY, Boolean(on));
+}
+
+export async function readPanelOpen() {
+  const v = await storageGet(PANEL_KEY);
+  if (v === undefined || v === null) {
+    return readEnabled();
+  }
+  return Boolean(v);
+}
+
+export async function writePanelOpen(open) {
+  await storageSet(PANEL_KEY, Boolean(open));
+}
+
+/** Stop orbit / seat work in this tab. Heartbeats cease; the coordinator drops us after lease. */
+export function stopSigningLocal() {
+  dropLiveShare();
 }
 
 export async function readStats() {

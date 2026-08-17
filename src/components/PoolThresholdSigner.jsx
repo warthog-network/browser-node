@@ -6,8 +6,11 @@ import {
   heartbeat,
   loadActiveShare,
   readEnabled,
+  readPanelOpen,
   readStats,
+  stopSigningLocal,
   writeEnabled,
+  writePanelOpen,
   writeStats,
   DEFAULT_POOL_API,
 } from '../lib/poolSigner.js';
@@ -78,11 +81,13 @@ function useRotateDue(rotation) {
 
 export default function PoolThresholdSigner() {
   const [share, setShare] = useState(null);
-  const [enabled, setEnabled] = useState(true);
+  const [enabled, setEnabled] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [ready, setReady] = useState(false);
   const [status, setStatus] = useState(null);
   const [pool3p, setPool3p] = useState(null);
   const [phase, setPhase] = useState('idle');
-  const [log, setLog] = useState('joining 3P orbit…');
+  const [log, setLog] = useState('node ready — signing is opt-in');
   const [error, setError] = useState(null);
   const [stats, setStats] = useState({ signedCount: 0, history: [] });
   const [verify, setVerify] = useState(null);
@@ -97,44 +102,59 @@ export default function PoolThresholdSigner() {
     setLog(msg);
   };
 
+  const joinOrbit = useCallback(async () => {
+    const s = await loadActiveShare();
+    const p3 = await fetchPool3pStatus().catch(() => null);
+    setShare(s);
+    setPool3p(p3);
+    putLog(
+      s.waitlist
+        ? 'orbit voter — this tab attests tickets and can rebuild a vacant seat'
+        : s.role === 1
+          ? 'holding d1 — this tab finishes 3P Lindell'
+          : s.role === 2
+            ? 'holding d2 — this tab offers the additive share'
+            : `joined as slot ${s.shareIndex}`,
+    );
+    setError(null);
+    setPhase('online');
+    return s;
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const on = await readEnabled();
+      const open = await readPanelOpen();
       const st = await readStats();
-      if (!cancelled) {
-        setEnabled(on);
-        setStats(st);
+      if (cancelled) return;
+      setEnabled(on);
+      setPanelOpen(open);
+      setStats(st);
+      if (!on) {
+        stopSigningLocal();
+        setShare(null);
+        setPhase('paused');
+        putLog('signing off — this tab is a node only until you opt in');
+        setReady(true);
+        return;
       }
       try {
-        const s = await loadActiveShare();
-        const p3 = await fetchPool3pStatus().catch(() => null);
-        if (!cancelled) {
-          setShare(s);
-          setPool3p(p3);
-          putLog(
-            s.waitlist
-              ? 'orbit voter — this tab attests tickets and can rebuild a vacant seat'
-              : s.role === 1
-                ? 'holding d1 — this tab finishes 3P Lindell'
-                : s.role === 2
-                  ? 'holding d2 — this tab offers the additive share'
-                  : `joined as slot ${s.shareIndex}`,
-          );
-          setError(null);
-        }
+        await joinOrbit();
       } catch (e) {
         if (!cancelled) {
           setPhase('error');
           setError(e?.message || String(e));
           putLog('could not join 3P orbit');
         }
+      } finally {
+        if (!cancelled) setReady(true);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [joinOrbit]);
 
   const tick = useCallback(async () => {
     if (!share || !enabled || tickLock.current) return;
@@ -312,7 +332,29 @@ export default function PoolThresholdSigner() {
     const next = !enabled;
     setEnabled(next);
     await writeEnabled(next);
-    setPhase(next ? 'online' : 'paused');
+    if (!next) {
+      stopSigningLocal();
+      setShare(null);
+      setPhase('paused');
+      setError(null);
+      putLog('signing off — left the 3P orbit (node still runs)');
+      return;
+    }
+    setPhase('online');
+    putLog('joining 3P orbit…');
+    try {
+      await joinOrbit();
+    } catch (e) {
+      setPhase('error');
+      setError(e?.message || String(e));
+      putLog('could not join 3P orbit');
+    }
+  };
+
+  const togglePanel = async () => {
+    const next = !panelOpen;
+    setPanelOpen(next);
+    await writePanelOpen(next);
   };
 
   const open = useMemo(() => {
@@ -362,34 +404,77 @@ export default function PoolThresholdSigner() {
   const d2Pack = pool3p?.packs?.['2'] || pool3p?.packs?.[2];
 
   const phaseLabel =
-    !share && phase === 'error'
-      ? 'Offline'
-      : !share
-        ? 'Joining'
-        : phase === 'signed'
-          ? 'Paid'
-          : phase === 'error'
-            ? 'Retrying'
-            : !enabled
-              ? 'Paused'
+    !enabled
+      ? 'Off'
+      : !share && phase === 'error'
+        ? 'Offline'
+        : !share
+          ? 'Joining'
+          : phase === 'signed'
+            ? 'Paid'
+            : phase === 'error'
+              ? 'Retrying'
               : room
                 ? isOrbit
                   ? 'Attesting'
                   : 'In the room'
                 : 'Listening';
 
+  const controls = (
+    <div className="pool-signer__controls">
+      <button
+        type="button"
+        className={`btn btn--ghost${enabled ? ' is-on' : ''}`}
+        onClick={toggle}
+        disabled={!ready}
+        title={
+          enabled
+            ? 'Leave the 3P orbit. The WASM node keeps running.'
+            : 'Join the 3P orbit as a signer (attest tickets; may hold d1/d2).'
+        }
+      >
+        {enabled ? 'Signing ON' : 'Signing OFF'}
+      </button>
+      <button
+        type="button"
+        className="btn btn--ghost"
+        onClick={togglePanel}
+        aria-expanded={panelOpen}
+        title={panelOpen ? 'Hide the signer dashboard' : 'Show the signer dashboard'}
+      >
+        {panelOpen ? 'Hide panel' : 'Show panel'}
+      </button>
+    </div>
+  );
+
+  if (!panelOpen) {
+    return (
+      <section className="panel pool-signer pool-signer--collapsed" aria-label="3P pool signer">
+        <div className="panel__head">
+          <h2>3P pool signer</h2>
+          {controls}
+        </div>
+        <div
+          className={`pool-signer__status is-${
+            !enabled ? 'idle' : phase === 'signing' ? 'signing' : phase === 'error' ? 'err' : phase === 'signed' ? 'ok' : 'idle'
+          }`}
+        >
+          <span className="pool-signer__dot" aria-hidden />
+          <strong>{phaseLabel}</strong>
+          <span className="pool-signer__count">
+            {enabled ? `${seatLabel(share)} · ${liveN} live` : 'node only — not in the orbit'}
+          </span>
+        </div>
+        {error ? <p className="dash__error">{error}</p> : null}
+      </section>
+    );
+  }
+
   return (
     <section className="panel pool-signer" aria-label="3P pool signer">
       <div className="panel__head">
         <h2>3P pool signer</h2>
-        <button
-          type="button"
-          className={`btn btn--ghost${enabled ? ' is-on' : ''}`}
-          onClick={toggle}
-          disabled={!share}
-        >
-          {enabled ? 'Signing ON' : 'Signing OFF'}
-        </button>
+        {controls}
       </div>
 
       <div
@@ -400,12 +485,18 @@ export default function PoolThresholdSigner() {
         <span className="pool-signer__dot" aria-hidden />
         <strong>{phaseLabel}</strong>
         <span className="pool-signer__count">
-          {seatLabel(share)} · {liveN} live
+          {enabled ? `${seatLabel(share)} · ${liveN} live` : 'node only — not in the orbit'}
         </span>
       </div>
 
       <p className="pool-signer__lead">
-        {share ? (
+        {!enabled ? (
+          <>
+            This tab can run the WASM node without signing. Turn{' '}
+            <strong>Signing ON</strong> to join the 3P orbit (attest tickets;
+            you may be offered d1 or d2).
+          </>
+        ) : share ? (
           <>
             You are <code>{shortId(share.signerId)}</code>
             {share.role === 1
@@ -420,7 +511,7 @@ export default function PoolThresholdSigner() {
         )}
       </p>
 
-      <div className="pool-signer__seats" aria-label="d1 and d2 holders">
+      {!enabled ? null : <div className="pool-signer__seats" aria-label="d1 and d2 holders">
         <div
           className={`pool-signer__seat${share?.role === 1 ? ' is-you' : ''}${
             pool3p?.holder1 ? ' is-held' : ''
@@ -467,8 +558,9 @@ export default function PoolThresholdSigner() {
                 : 'will rebuild from orbit pack'}
           </span>
         </div>
-      </div>
+      </div>}
 
+      {enabled ? (
       <ol className="pool-signer__steps" aria-label="ceremony progress">
         <li className={steps.d1 ? 'is-done' : 'is-wait'}>
           <span>1</span> d1 R1 {steps.d1 ? 'in' : room ? 'waiting' : 'idle'}
@@ -561,6 +653,7 @@ export default function PoolThresholdSigner() {
           ))
         )}
       </ul>
+      ) : null}
 
       <details className="pool-signer__history" open={paidList.length > 0}>
         <summary>

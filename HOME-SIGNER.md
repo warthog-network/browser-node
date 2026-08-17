@@ -1,8 +1,13 @@
 # Pool signer (website + extension)
 
-Opening **browser-node.netlify.app** or the extension auto-enrolls this
-browser as a unique signer. No import. Same origin / same profile = same
-signer. Another device or the extension is a new signer.
+Opening **browser-node.netlify.app** or the extension runs a WASM node.
+Signing is **opt-in**: use **Signing ON / OFF**. A node-only tab does not
+join the 3P orbit. **Show panel / Hide panel** collapses the signer
+dashboard; signing can stay on in the background.
+
+Already-enrolled profiles keep signing until they turn it off. Fresh
+profiles start off. Same origin / same profile = same signer. Another
+device or the extension is a new signer.
 
 Payout waits for **every signer seen in the last ~2 minutes** (n-of-n
 active), with a floor of 3. Cap 32 unique slots.

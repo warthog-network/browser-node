@@ -78,6 +78,21 @@
   color: var(--danger);
 }
 
+.pool-signer__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.pool-signer--collapsed {
+  padding-bottom: 0.7rem;
+}
+
+.pool-signer--collapsed .pool-signer__status {
+  margin-top: 0.45rem;
+}
+
 .pool-signer__seats {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -375,9 +390,10 @@
 
 .panel__head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+  flex-wrap: wrap;
   margin-bottom: 0.75rem;
 }
 
