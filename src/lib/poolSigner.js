@@ -1324,34 +1324,20 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
       verify = lastVerify;
     }
     if (!verify.ok) {
-      const live = [...(p3?.open || []), ...(st.open || [])].find(
-        (r) => String(r?.ticketId || '') === String(req.ticketId || ''),
-      );
       const reasons = (verify.reasons || []).map((r) => String(r));
-      const inspectUnusable = reasons.some((r) =>
-        /inspect\/pool is not ok|inspect HTTP|Bad Gateway|no pool report|inspect poolAddress/i.test(
-          r,
-        ),
+      const waitingProof = reasons.some((r) =>
+        /waiting for Cartesi notice proof/i.test(r),
       );
-      const prepared =
-        live &&
-        (live.hasPartial ||
-          live.haveR1 ||
-          live.haveD2 ||
-          live.prep?.hashHex ||
-          live.hashHex ||
-          (inspectUnusable && live.amountE8 && live.toAddress));
-      if (prepared) {
-        verify = { ...verify, ok: true, finishDespiteVerify: true };
-      } else {
-        results.push({
-          ticketId: req.ticketId,
-          skipped: true,
-          error: reasons.join('; ') || 'verification failed',
-          verify,
-        });
-        continue;
-      }
+      // Redeem tickets must pass validateNotice. Do not sign from a half-open room.
+      results.push({
+        ticketId: req.ticketId,
+        skipped: true,
+        waiting: waitingProof,
+        waitingOn: waitingProof ? 'notice-proof' : undefined,
+        error: reasons.join('; ') || 'verification failed',
+        verify,
+      });
+      continue;
     }
     try {
       let r;

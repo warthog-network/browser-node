@@ -1,9 +1,17 @@
+import {
+  NOTICE_PROOF_GQL,
+  noticeHasProof,
+  ticketNeedsNoticeProof,
+  validateNoticeOnL1,
+} from './cartesiNoticeProof.js';
+
 /**
  * Independent checks a pool signer must pass before handing over a share.
  *
  *   1. Cartesi inspect/pool — machine state + recent release tickets + in-machine SPV
- *   2. GraphQL notices — pool_release_ticket (the burn/redeem attestation)
- *   3. Independent Warthog head — DeFi testnet tip vs the machine light-client tip
+ *   2. GraphQL notices — pool_release_ticket + Cartesi output proof
+ *   3. Application.validateNotice on L1 (Anvil) — not /api/pool JSON
+ *   4. Independent Warthog head — DeFi testnet tip vs the machine light-client tip
  *
  * The coordinator is not trusted for "this ticket is real." We read rollup
  * outputs and a Warthog node, then compare. Lab-demo tickets skip the notice
@@ -141,7 +149,7 @@ export async function fetchInspectPool() {
 
 async function graphqlNoticesPage(cursor) {
   const after = cursor ? `, before: "${cursor}"` : '';
-  const query = `{ notices(last: 100${after}) { pageInfo { hasPreviousPage startCursor } edges { node { index payload } } } vouchers(last: 20) { edges { node { index destination payload } } } }`;
+  const query = `{ notices(last: 100${after}) { pageInfo { hasPreviousPage startCursor } edges { node { ${NOTICE_PROOF_GQL} } } } vouchers(last: 20) { edges { node { index destination payload } } } }`;
   return fetchJson(ROLLUP_GRAPHQL, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -167,7 +175,16 @@ export async function fetchReleaseNotice(ticketId) {
         if (!obj || obj.type !== 'pool_release_ticket') continue;
         if (String(obj.ticketId || '') !== id) continue;
         const idx = Number(e?.node?.index ?? 0);
-        if (!best || idx >= best._index) best = { ...obj, _index: idx };
+        const proof = e?.node?.proof || null;
+        const row = {
+          ...obj,
+          _index: idx,
+          _inputIndex: e?.node?.input?.index ?? null,
+          _payloadHex: e?.node?.payload || null,
+          _proof: proof,
+          _hasProof: noticeHasProof(proof),
+        };
+        if (!best || idx >= best._index) best = row;
       }
       if (best) break;
       if (!conn.pageInfo?.hasPreviousPage || !conn.pageInfo?.startCursor) break;
@@ -218,6 +235,7 @@ export function evaluateVerification({
   const checks = {
     inspect: false,
     notice: false,
+    noticeProof: false,
     inspectTicket: false,
     spv: false,
   };
@@ -266,6 +284,18 @@ export function evaluateVerification({
     reasons.push('no pool_release_ticket notice — that notice is the burn attestation');
   }
 
+  const needProof = requireNotice && ticketNeedsNoticeProof(req?.ticketId, { labDemo: lab });
+  if (needProof && checks.notice) {
+    if (notice?._noticeProofOk) checks.noticeProof = true;
+    else if (!notice?._hasProof) {
+      reasons.push('waiting for Cartesi notice proof (epoch not claimed)');
+    } else {
+      reasons.push('Cartesi notice proof present but validateNotice has not passed');
+    }
+  } else if (!needProof) {
+    checks.noticeProof = true;
+  }
+
   const spv = inspectPool?.spv || {};
   const machineH = Number(spv.bestHeight || 0);
   const machineHash = String(spv.bestHash || '')
@@ -299,6 +329,7 @@ export function evaluateVerification({
   const ok =
     checks.inspect &&
     (!requireNotice || checks.notice) &&
+    (!needProof || checks.noticeProof) &&
     (checks.spv || authorizedTicket);
 
   return {
@@ -318,9 +349,11 @@ export function evaluateVerification({
       ? {
           ticketId: notice.ticketId,
           index: notice._index ?? notice.index ?? null,
+          inputIndex: notice._inputIndex ?? null,
           amountE8: notice.amountE8,
           toAddress: notice.toAddress,
           reason: notice.reason || null,
+          hasProof: !!notice._hasProof,
         }
       : null,
     machine: {
@@ -341,12 +374,37 @@ export async function verifyOpenRequest(req) {
   const inspect = await fetchInspectPool();
   const gql = await fetchReleaseNotice(req.ticketId);
   const wartHead = await fetchIndependentHead();
+  const notice = gql.notice;
+  if (
+    notice &&
+    ticketNeedsNoticeProof(req.ticketId, { labDemo: req.labDemo }) &&
+    notice._hasProof &&
+    notice._payloadHex
+  ) {
+    const l1 = await validateNoticeOnL1({
+      payloadHex: notice._payloadHex,
+      proof: notice._proof,
+    });
+    notice._noticeProofOk = !!l1.ok;
+    notice._noticeProofError = l1.error || null;
+    if (!l1.ok && l1.error && !l1.waiting) {
+      /* keep error for evaluate reasons */
+    }
+  }
   const ev = evaluateVerification({
     req,
     inspectPool: inspect.pool,
-    notice: gql.notice,
+    notice,
     wartHead,
   });
+  if (notice && notice._hasProof && !notice._noticeProofOk && ev.checks.notice) {
+    const extra = notice._noticeProofError || 'validateNotice failed';
+    if (!ev.reasons.some((r) => /validateNotice|notice proof/i.test(r))) {
+      ev.reasons.push(extra);
+    }
+    ev.ok = false;
+    ev.checks.noticeProof = false;
+  }
   return {
     ...ev,
     sources: {
@@ -358,6 +416,7 @@ export async function verifyOpenRequest(req) {
     attestation: {
       ticketId: req.ticketId,
       noticeOk: ev.checks.notice,
+      noticeProofOk: ev.checks.noticeProof,
       inspectOk: ev.checks.inspect,
       inspectTicketOk: ev.checks.inspectTicket,
       spvOk: ev.checks.spv,
@@ -393,11 +452,13 @@ export async function probeMachineHealth() {
 
 export function formatVerifyLine(v) {
   if (!v) return 'verify —';
-  const noticeBit = v.checks?.notice
-    ? '✓ notice'
-    : v.ok
-      ? '— notice'
-      : '✗ notice';
+  const noticeBit = v.checks?.noticeProof
+    ? '✓ notice-proof'
+    : v.checks?.notice
+      ? '… notice-proof'
+      : v.ok
+        ? '— notice'
+        : '✗ notice';
   const bit = (ok, label) => `${ok ? '✓' : '✗'} ${label}`;
   const lag =
     v.wartHead?.lag == null ? '' : ` · lag ${v.wartHead.lag}`;
