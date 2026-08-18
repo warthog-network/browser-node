@@ -398,6 +398,31 @@ export default function PoolThresholdSigner() {
     lindell: !!(room?.steps?.lindell ?? room?.hasPartial),
     paid: !!(room?.steps?.paid || phase === 'signed'),
   };
+  const wait = room?.waitingOn || [];
+  const lastErr = room?.lastError ? String(room.lastError).slice(0, 48) : '';
+  const errStep = !lastErr
+    ? null
+    : wait.includes('d2') || wait.includes('d2-holder') || /d2/i.test(lastErr)
+      ? 'd2'
+      : wait.includes('d1') || /r1|\bd1\b/i.test(lastErr)
+        ? 'd1'
+        : wait.includes('lindell') || /lindell|partial|k1/i.test(lastErr)
+          ? 'lindell'
+          : wait.includes('notice-proof')
+            ? !steps.d1
+              ? 'd1'
+              : !steps.d2
+                ? 'd2'
+                : 'lindell'
+            : steps.lindell
+              ? 'paid'
+              : null;
+  const stepHint = (key, idle, done) => {
+    if (done) return idle;
+    if (!room) return 'idle';
+    if (errStep === key && lastErr) return `waiting · ${lastErr}`;
+    return 'waiting';
+  };
   const isOrbit = !share || share.waitlist || Number(share.role) === 0;
   const rotateDue = useRotateDue(pool3p?.rotation);
   const d1Pack = pool3p?.packs?.['1'] || pool3p?.packs?.[1];
@@ -566,20 +591,20 @@ export default function PoolThresholdSigner() {
         <>
           <ol className="pool-signer__steps" aria-label="ceremony progress">
             <li className={steps.d1 ? 'is-done' : 'is-wait'}>
-              <span>1</span> d1 R1 {steps.d1 ? 'in' : room ? 'waiting' : 'idle'}
+              <span>1</span> d1 R1 {stepHint('d1', 'in', steps.d1)}
             </li>
             <li className={steps.d2 ? 'is-done' : 'is-wait'}>
-              <span>2</span> d2 share {steps.d2 ? 'in' : room ? 'waiting' : 'idle'}
+              <span>2</span> d2 share {stepHint('d2', 'in', steps.d2)}
             </li>
             <li className={steps.lindell ? 'is-done' : 'is-wait'}>
-              <span>3</span> Lindell {steps.lindell ? 'combined' : room ? 'waiting' : 'idle'}
+              <span>3</span> Lindell {stepHint('lindell', 'combined', steps.lindell)}
             </li>
             <li className={steps.paid ? 'is-done' : 'is-wait'}>
               <span>4</span>{' '}
               {steps.paid
                 ? 'broadcast'
-                : room?.lastError
-                  ? `held · ${String(room.lastError).slice(0, 48)}`
+                : errStep === 'paid' && lastErr
+                  ? `held · ${lastErr}`
                   : room
                     ? isOrbit
                       ? 'orbit attested'

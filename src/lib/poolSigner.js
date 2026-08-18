@@ -224,6 +224,53 @@ function bytesToHex(bytes) {
 }
 
 /** Browser-safe: never use Node `Buffer` here (it is undefined in Chrome/Brave). */
+async function hexMatchesLivePoint(hex, expectedP) {
+  const want = compactPointHex(expectedP);
+  if (!hex || !want) return false;
+  try {
+    return compactPointHex(await pointOfShare(hex)) === want;
+  } catch {
+    return false;
+  }
+}
+
+async function postD2Hex(share, req, api, p3, startHex) {
+  let hex = startHex;
+  const d2 = await poolPost(api, {
+    action: 'pool3p_d2',
+    ticketId: req.ticketId,
+    signerId: share.signerId,
+    d2Hex: hex,
+    amountE8: req.amountE8,
+    toAddress: req.toAddress,
+  });
+  if (d2?.recover === 2 || /d2·G ≠ live P2/i.test(d2?.error || '')) {
+    const recovered = await tryRecoverFromPack(share.signerId, 2, api, {
+      expectedP: d2.expectedP || p3?.seal?.P2,
+      poolAddress: share.poolAddress || p3?.address,
+      publicKey: p3?.seal?.publicKey || p3?.publicKey,
+      seal: p3?.seal,
+    });
+    if (recovered?.userShareHex) {
+      writeBornCache(recovered);
+      liveShare = recovered;
+      hex = recovered.userShareHex;
+      return poolPost(api, {
+        action: 'pool3p_d2',
+        ticketId: req.ticketId,
+        signerId: share.signerId,
+        d2Hex: hex,
+        amountE8: req.amountE8,
+        toAddress: req.toAddress,
+      });
+    }
+    return { ok: false, ticketId: req.ticketId, error: d2.error };
+  }
+  return d2.skipped
+    ? { ok: true, orbitOnly: true, ticketId: req.ticketId, note: d2.error }
+    : d2;
+}
+
 async function pointOfShare(hex) {
   const { secp256k1 } = await import('@noble/curves/secp256k1');
   const n = secp256k1.CURVE.n;
@@ -1328,16 +1375,19 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
       const waitingProof = reasons.some((r) =>
         /waiting for Cartesi notice proof/i.test(r),
       );
-      // Redeem tickets must pass validateNotice. Do not sign from a half-open room.
-      results.push({
-        ticketId: req.ticketId,
-        skipped: true,
-        waiting: waitingProof,
-        waitingOn: waitingProof ? 'notice-proof' : undefined,
-        error: reasons.join('; ') || 'verification failed',
-        verify,
-      });
-      continue;
+      const roomAlreadyIn = !!(req.haveR1 || req.noticeProofOk || req.steps?.d1);
+      // Coordinator already took R1 / notice. Do not skip d2 on a stale proof wait.
+      if (!(waitingProof && roomAlreadyIn && is3pShare(share))) {
+        results.push({
+          ticketId: req.ticketId,
+          skipped: true,
+          waiting: waitingProof,
+          waitingOn: waitingProof ? 'notice-proof' : undefined,
+          error: reasons.join('; ') || 'verification failed',
+          verify,
+        });
+        continue;
+      }
     }
     try {
       let r;
@@ -1349,46 +1399,15 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
         }).catch(() => null);
       }
       const role = Number(share.role || 0);
-      if (share.waitlist || role === 0) {
+      const hex = share.userShareHex || share.shareHex;
+      const canOfferD2 =
+        is3pShare(share) &&
+        !!hex &&
+        (role === 2 || (await hexMatchesLivePoint(hex, p3?.seal?.P2)));
+      if (canOfferD2) {
+        r = await postD2Hex(share, req, api, p3, hex);
+      } else if (share.waitlist || role === 0) {
         r = { ok: true, orbitOnly: true, ticketId: req.ticketId };
-      } else if (is3pShare(share) && role === 2) {
-        let hex = share.userShareHex || share.shareHex;
-        const d2 = await poolPost(api, {
-          action: 'pool3p_d2',
-          ticketId: req.ticketId,
-          signerId: share.signerId,
-          d2Hex: hex,
-          amountE8: req.amountE8,
-          toAddress: req.toAddress,
-        });
-        if (d2?.recover === 2 || /d2·G ≠ live P2/i.test(d2?.error || '')) {
-          const recovered = await tryRecoverFromPack(share.signerId, 2, api, {
-            expectedP: d2.expectedP || p3?.seal?.P2,
-            poolAddress: share.poolAddress || p3?.address,
-            publicKey: p3?.seal?.publicKey || p3?.publicKey,
-            seal: p3?.seal,
-          });
-          if (recovered?.userShareHex) {
-            writeBornCache(recovered);
-            liveShare = recovered;
-            hex = recovered.userShareHex;
-            const retry = await poolPost(api, {
-              action: 'pool3p_d2',
-              ticketId: req.ticketId,
-              signerId: share.signerId,
-              d2Hex: hex,
-              amountE8: req.amountE8,
-              toAddress: req.toAddress,
-            });
-            r = retry;
-          } else {
-            r = { ok: false, ticketId: req.ticketId, error: d2.error };
-          }
-        } else {
-          r = d2.skipped
-            ? { ok: true, orbitOnly: true, ticketId: req.ticketId, note: d2.error }
-            : d2;
-        }
       } else if (is3pShare(share) && role === 1) {
         r = await sign3pAsRole1(share, req, api);
         if (r?.fatal) {
