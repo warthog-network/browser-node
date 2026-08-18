@@ -372,6 +372,15 @@ async function readNextBornCache(signerId, role) {
 }
 
 async function maybePromoteNextQ(share, st) {
+  const phase = String(st?.rotation?.phase || '');
+  const need = st?.rotation?.next?.needBirth || st?.rotation?.needBirth;
+  if (
+    phase === 'need_birth' ||
+    phase === 'next_ready' ||
+    (need && (need[1] || need['1'] || need[2] || need['2']))
+  ) {
+    return null;
+  }
   const liveAddr = String(st?.address || '')
     .replace(/^0x/i, '')
     .toLowerCase();
@@ -406,13 +415,21 @@ async function maybeBirthNextQ(share, api) {
   const bornBy = st?.rotation?.next?.bornBy || {};
   if (bornBy[1] === share.signerId || bornBy[2] === share.signerId) return null;
   if (!need || (!need[1] && !need['1'] && !need[2] && !need['2'])) return null;
-  if (Number(share.role) !== 1 && Number(share.role) !== 2) return null;
+  const liveRole = Number(share.role || 0);
+  const need1 = !!(need[1] || need['1']);
+  const need2 = !!(need[2] || need['2']);
+  // Prefer the live seat holder. Any other live tab may fill a vacant next
+  // seat so rotate is not stuck on one sleeping dealer tab.
   const role =
-    (need[1] || need['1']) && Number(share.role) === 1
+    need1 && liveRole === 1
       ? 1
-      : (need[2] || need['2']) && Number(share.role) === 2
+      : need2 && liveRole === 2
         ? 2
-        : null;
+        : need1
+          ? 1
+          : need2
+            ? 2
+            : null;
   if (!role) return null;
   const { makeClientSeat } = await import('./pool3pClient.js');
   const seat = makeClientSeat(role);
@@ -1061,9 +1078,14 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
       if (born?.userShareHex && born.nextQ === false) {
         next = born;
         liveShare = born;
+      } else if (born?.message) {
+        next = { ...next, message: born.message };
       }
-    } catch {
-      /* next Q birth is best-effort */
+    } catch (e) {
+      next = {
+        ...next,
+        message: `next Q birth: ${e?.message || e}`,
+      };
     }
     return { ...r, share: next };
   }

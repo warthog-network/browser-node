@@ -671,9 +671,16 @@ export default function PoolThresholdSigner() {
           {pool3p?.rotation?.intervalEpochs
             ? ` / ${pool3p.rotation.intervalEpochs}`
             : ''}
-          {pool3p?.rotation?.next?.needBirth?.[1] || pool3p?.rotation?.next?.needBirth?.[2]
-            ? ' · this tab can birth the next Q'
-            : ''}
+          {(() => {
+            const need = pool3p?.rotation?.next?.needBirth || {};
+            const bornBy = pool3p?.rotation?.next?.bornBy || {};
+            const sid = share?.signerId;
+            const role = Number(share?.role || 0);
+            const can =
+              (need[1] && bornBy[1] !== sid && (role === 1 || role === 0)) ||
+              (need[2] && bornBy[2] !== sid && (role === 2 || role === 0));
+            return can ? ' · this tab should birth the next Q' : '';
+          })()}
           {pool3p?.rotation?.next?.address
             ? ` · next ${String(pool3p.rotation.next.address).slice(0, 12)}…`
             : ''}
