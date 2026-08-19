@@ -632,6 +632,9 @@ export default function PoolThresholdSigner() {
           {open.length > 0 && (
             <p className="pool-signer__meta">
               Open room: {open.map((r) => shortTicket(r.ticketId)).join(' · ')}
+              {open.some((r) => Number(r.amountE8) > 0 && !r.steps?.paid)
+                ? ' — stranded unlock: leave Signing ON to pay from the live Q'
+                : ''}
             </p>
           )}
           <ul className="pool-signer__slots" aria-label="live orbit">
