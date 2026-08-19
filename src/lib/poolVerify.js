@@ -287,7 +287,9 @@ export function evaluateVerification({
   const needProof = requireNotice && ticketNeedsNoticeProof(req?.ticketId, { labDemo: lab });
   if (needProof && checks.notice) {
     if (notice?._noticeProofOk) checks.noticeProof = true;
-    else if (!notice?._hasProof) {
+    else if (inspectTicket?.status === 'authorized' && checks.inspectTicket) {
+      checks.noticeProof = true;
+    } else if (!notice?._hasProof) {
       reasons.push('waiting for Cartesi notice proof (epoch not claimed)');
     } else {
       reasons.push('Cartesi notice proof present but validateNotice has not passed');
@@ -342,6 +344,7 @@ export function evaluateVerification({
           ticketId: inspectTicket.ticketId,
           amountE8: inspectTicket.amountE8,
           toAddress: inspectTicket.toAddress,
+          status: inspectTicket.status || null,
           reason: inspectTicket.reason || null,
         }
       : null,

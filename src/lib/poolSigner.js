@@ -1397,9 +1397,11 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
       const waitingProof = reasons.some((r) =>
         /waiting for Cartesi notice proof/i.test(r),
       );
-      const roomAlreadyIn = !!(req.haveR1 || req.noticeProofOk || req.steps?.d1);
-      // Coordinator already took R1 / notice. Do not skip d2 on a stale proof wait.
-      if (!(waitingProof && roomAlreadyIn && is3pShare(share))) {
+      const authorized =
+        String(verify.inspectTicket?.status || '') === 'authorized' ||
+        !!(verify.checks?.inspectTicket && verify.checks?.notice);
+      // Unpaid authorized ticket: sign. Proof/SPV lag must not skip the room.
+      if (!authorized && !(waitingProof && is3pShare(share))) {
         results.push({
           ticketId: req.ticketId,
           skipped: true,
