@@ -371,6 +371,28 @@ async function readNextBornCache(signerId, role) {
   return null;
 }
 
+function normHex(v) {
+  return String(v || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+}
+
+async function stampNextBornAddress(share, st) {
+  const nextAddr = normHex(st?.rotation?.next?.address);
+  if (!nextAddr || !share?.signerId) return;
+  const role = Number(share.role || 0);
+  if (role !== 1 && role !== 2) return;
+  const cached = await readNextBornCache(share.signerId, role);
+  if (!cached?.userShareHex) return;
+  if (normHex(cached.poolAddress) === nextAddr) return;
+  writeNextBornCache({
+    ...cached,
+    poolAddress: nextAddr,
+    publicKey: st.rotation?.next?.publicKey || cached.publicKey,
+    message: cached.message || `next Q d${role} born — ${nextAddr}`,
+  });
+}
+
 async function maybePromoteNextQ(share, st) {
   const phase = String(st?.rotation?.phase || '');
   const need = st?.rotation?.next?.needBirth || st?.rotation?.needBirth;
@@ -381,18 +403,17 @@ async function maybePromoteNextQ(share, st) {
   ) {
     return null;
   }
-  const liveAddr = String(st?.address || '')
-    .replace(/^0x/i, '')
-    .toLowerCase();
+  const liveAddr = normHex(st?.address);
   if (!liveAddr || !share?.signerId) return null;
   const role = Number(share.role || 0);
   if (role !== 1 && role !== 2) return null;
   const cached = await readNextBornCache(share.signerId, role);
   if (!cached?.userShareHex) return null;
-  const cachedAddr = String(cached.poolAddress || '')
-    .replace(/^0x/i, '')
-    .toLowerCase();
-  if (cachedAddr !== liveAddr) return null;
+  const cachedAddr = normHex(cached.poolAddress);
+  const liveP = normHex(role === 1 ? st?.seal?.P1 : st?.seal?.P2);
+  const cachedP = normHex(cached.P);
+  const pMatch = !!(cachedP && liveP && cachedP === liveP);
+  if (cachedAddr !== liveAddr && !pMatch) return null;
   const promoted = {
     ...cached,
     scheme: cached.scheme || 'wart-3p-ecdsa-lindell-v1',
@@ -409,6 +430,7 @@ async function maybePromoteNextQ(share, st) {
 
 async function maybeBirthNextQ(share, api) {
   const st = await fetchPool3pStatus(api).catch(() => null);
+  await stampNextBornAddress(share, st);
   const promoted = await maybePromoteNextQ(share, st);
   if (promoted) return promoted;
   const need = st?.rotation?.next?.needBirth || st?.rotation?.needBirth;
