@@ -234,17 +234,65 @@ async function hexMatchesLivePoint(hex, expectedP) {
   }
 }
 
-async function postD2Hex(share, req, api, p3, startHex) {
+async function postD2Offer(share, req, api, p3, startHex) {
+  const send = async (hex) => {
+    const n = p3?.paillierN;
+    const g = p3?.paillierG;
+    const P2 = compactPointHex(p3?.seal?.P2 || '');
+    if (!n || !g || !P2) {
+      throw new Error('d2 Enc offer needs pool Paillier N,g and P2 — hard-refresh this tab');
+    }
+    if (!hex) throw new Error('d2 hex missing in this tab');
+    const zk = await import('./lindellZk.js');
+    const { PublicKey } = await import('paillier-bigint');
+    const { seatPokContext } = await import('./pool3pClient.js');
+    const x = BigInt('0x' + String(hex).replace(/^0x/i, ''));
+    const pub = new PublicKey(BigInt(n), BigInt(g));
+    const enc = zk.encryptWithR(pub, x);
+    const ctx = `${seatPokContext('offer-d2', 2, P2)}|${req.ticketId}`;
+    const body = {
+      action: 'pool3p_d2',
+      ticketId: req.ticketId,
+      signerId: share.signerId,
+      encD2: enc.c.toString(),
+      encDlogProof: zk.proveEncEqualsDlog({
+        x,
+        rEnc: enc.r,
+        c: enc.c,
+        paillierN: n,
+        paillierG: g,
+        Qhex: P2,
+        context: ctx,
+      }),
+      amountE8: req.amountE8,
+      toAddress: req.toAddress,
+    };
+    if (x >= zk.LINDELL_Q_THIRD && x <= 2n * zk.LINDELL_Q_THIRD) {
+      body.rangeProof = zk.proveRangeLindell({
+        x,
+        rEnc: enc.r,
+        c: enc.c,
+        paillierN: n,
+        paillierG: g,
+        Q1: P2,
+        context: ctx,
+      });
+    }
+    return poolPost(api, body);
+  };
   let hex = startHex;
-  const d2 = await poolPost(api, {
-    action: 'pool3p_d2',
-    ticketId: req.ticketId,
-    signerId: share.signerId,
-    d2Hex: hex,
-    amountE8: req.amountE8,
-    toAddress: req.toAddress,
-  });
-  if (d2?.recover === 2 || /d2·G ≠ live P2/i.test(d2?.error || '')) {
+  let d2;
+  try {
+    d2 = await send(hex);
+  } catch (e) {
+    const msg = e?.message || String(e);
+    if (/x·G ≠ Q|ENC_DLOG: zx/i.test(msg)) {
+      d2 = { recover: 2, error: msg, expectedP: p3?.seal?.P2 };
+    } else {
+      throw e;
+    }
+  }
+  if (d2?.recover === 2 || /d2·G ≠ live P2|ENC_DLOG/i.test(d2?.error || '')) {
     const recovered = await tryRecoverFromPack(share.signerId, 2, api, {
       expectedP: d2.expectedP || p3?.seal?.P2,
       poolAddress: share.poolAddress || p3?.address,
@@ -255,14 +303,7 @@ async function postD2Hex(share, req, api, p3, startHex) {
       writeBornCache(recovered);
       liveShare = recovered;
       hex = recovered.userShareHex;
-      return poolPost(api, {
-        action: 'pool3p_d2',
-        ticketId: req.ticketId,
-        signerId: share.signerId,
-        d2Hex: hex,
-        amountE8: req.amountE8,
-        toAddress: req.toAddress,
-      });
+      return send(hex);
     }
     return { ok: false, ticketId: req.ticketId, error: d2.error };
   }
@@ -1106,8 +1147,7 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
       (next.waitlist ||
         Number(next.role) !== wantRole ||
         !next.userShareHex ||
-        !hexMatchesLive ||
-        (wantRole === 1 && hexMatchesLive && !next.paillierLambda))
+        !hexMatchesLive)
     ) {
       next = await enrollSigner(share.signerId, api);
       if (next?.userShareHex) return { ...r, share: next, shareUpdated: true };
@@ -1297,20 +1337,70 @@ async function ensureD1Paillier(share, api) {
     err.code = 'D1_NO_HEX';
     throw err;
   }
+  const zk = await import('./lindellZk.js');
   const { generateRandomKeys } = await import('paillier-bigint');
   const { PAILLIER_BITS, schnorrProveDlog, seatPokContext } = await import('./pool3pClient.js');
   const { publicKey: pk, privateKey: sk } = await generateRandomKeys(PAILLIER_BITS);
-  const enc = pk.encrypt(BigInt('0x' + String(share.userShareHex).replace(/^0x/i, '')));
+  const x1 = BigInt('0x' + String(share.userShareHex).replace(/^0x/i, ''));
   const P = await pointOfShare(share.userShareHex);
-  const ack = await poolPost(api, {
+  const enc = zk.encryptWithR(pk, x1);
+  const ctx = seatPokContext('rekey', 1, P);
+  const body = {
     action: 'pool3p_rekey_d1',
     signerId: share.signerId,
-    encD1: enc.toString(),
+    encD1: enc.c.toString(),
     paillierN: pk.n.toString(),
     paillierG: pk.g.toString(),
-    pok: schnorrProveDlog(share.userShareHex, seatPokContext('rekey', 1, P)),
-  });
-  if (!ack?.ok) {
+    pok: schnorrProveDlog(share.userShareHex, ctx),
+  };
+  if (x1 >= zk.LINDELL_Q_THIRD && x1 <= 2n * zk.LINDELL_Q_THIRD) {
+    body.rangeProof = zk.proveRangeLindell({
+      x: x1,
+      rEnc: enc.r,
+      c: enc.c,
+      paillierN: pk.n.toString(),
+      paillierG: pk.g.toString(),
+      Q1: P,
+      context: ctx,
+    });
+  }
+  let ack = await poolPost(api, body);
+  if (ack?.needPdl) {
+    const pr = zk.pdlProverCommit({
+      cPrime: ack.pdl.cPrime,
+      paillierN: pk.n.toString(),
+      paillierG: pk.g.toString(),
+      paillierLambda: sk.lambda.toString(),
+      paillierMu: sk.mu.toString(),
+    });
+    const opened = await poolPost(api, {
+      action: 'pool3p_pdl_commit',
+      signerId: share.signerId,
+      comQ: pr.comQ,
+      kind: 'rekey',
+    });
+    zk.pdlProverFinish({
+      alpha: pr.alpha,
+      x1,
+      a: opened.a,
+      b: opened.b,
+      Qhat: pr.Qhat,
+      comQ: pr.comQ,
+      nonceQ: pr.nonceQ,
+      comAB: opened.comAB,
+      nonceAB: opened.nonceAB,
+      Q1: P,
+    });
+    ack = await poolPost(api, {
+      action: 'pool3p_pdl_finish',
+      signerId: share.signerId,
+      Qhat: pr.Qhat,
+      nonceQ: pr.nonceQ,
+      comQ: pr.comQ,
+      kind: 'rekey',
+    });
+  }
+  if (!ack?.ok || ack?.needPdl) {
     const err = new Error(ack?.error || 'd1 Paillier rekey failed');
     err.code = 'D1_REKEY_FAILED';
     throw err;
@@ -1369,13 +1459,13 @@ async function sign3pAsRole1(share, req, api) {
     k1 = null;
   }
   if (!k1 && (st.haveR1 || st.hasPartial)) {
-    // Cannot finish someone else's k1. New R1, but keep d2 and reuse prepare.
-    await poolPost(api, {
-      action: 'pool3p_reset_r1',
+    // Wait for the tab that posted R1. Do not wipe a live Lindell transcript.
+    return {
+      ok: true,
+      waiting: true,
       ticketId: req.ticketId,
-      signerId: ready.signerId,
-    }).catch(() => null);
-    st = await poolPost(api, { action: 'pool3p_ticket', ticketId: req.ticketId });
+      error: 'd1 R1 already posted in another tab — use the dealer that holds k1',
+    };
   }
   if (!k1 || !st.haveR1) {
     const prep = await poolPost(api, {
@@ -1421,25 +1511,24 @@ async function sign3pAsRole1(share, req, api) {
       R2Hex: st.R2Hex,
       Q2Hex: st.Q2Hex,
       ckeyAdj: st.ckeyAdj,
-      sid: req.ticketId,
+      sid: req.ticketId || st.ticketId,
+      paillierN: st.paillierN,
+      paillierG: st.paillierG,
     });
   let fin;
   try {
     fin = tryFinish();
   } catch (e) {
     const msg = e?.message || String(e);
+    if (/LINDELL_C_ZK|Paillier N ≠|not the dealer that birthed/i.test(msg)) {
+      return { ok: false, waiting: true, ticketId: req.ticketId, error: msg };
+    }
     if (/recovery failed|does not match pool pubkey|missing pool pubkey/i.test(msg)) {
       st = await poolPost(api, { action: 'pool3p_relindell', ticketId: req.ticketId }).catch(() => st);
       try {
         if (st?.hasPartial) fin = tryFinish();
-      } catch {
-        await poolPost(api, {
-          action: 'pool3p_reset_r1',
-          ticketId: req.ticketId,
-          signerId: ready.signerId,
-        }).catch(() => null);
-        dropK1(req.ticketId);
-        return { ok: false, waiting: true, retry: true, ticketId: req.ticketId, error: msg };
+      } catch (e2) {
+        return { ok: false, waiting: true, ticketId: req.ticketId, error: e2?.message || msg };
       }
     } else {
       throw e;
@@ -1567,7 +1656,7 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
         !!hex &&
         (role === 2 || (await hexMatchesLivePoint(hex, p3?.seal?.P2)));
       if (canOfferD2) {
-        r = await postD2Hex(share, req, api, p3, hex);
+        r = await postD2Offer(share, req, api, p3, hex);
       } else if (share.waitlist || role === 0) {
         r = { ok: true, orbitOnly: true, ticketId: req.ticketId };
       } else if (is3pShare(share) && role === 1) {

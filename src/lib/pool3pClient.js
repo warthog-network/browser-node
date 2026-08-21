@@ -256,6 +256,8 @@ export function clientSignFinish({
   Q2Hex,
   ckeyAdj,
   sid,
+  paillierN,
+  paillierG,
 }) {
   if (!clientSecret?.paillierN || !clientSecret?.paillierLambda) {
     throw new Error('d1 seat missing Paillier key — re-enroll this tab as d1');
@@ -269,12 +271,26 @@ export function clientSignFinish({
     hashHex,
     ciphertext,
   });
+  if (!sid) {
+    throw new Error('LINDELL_C_ZK: missing ticket sid (do not hash the tx hash as the proof domain)');
+  }
   if (!Q2Hex || !R2Hex || ckeyAdj == null) {
     throw new Error('LINDELL_C_ZK_MISSING: need Q2Hex, R2Hex, and ckeyAdj');
   }
+  const pubN = paillierN || clientSecret.paillierN;
+  const pubG = paillierG || clientSecret.paillierG;
+  if (
+    clientSecret.paillierN &&
+    pubN &&
+    BigInt(String(pubN)) !== BigInt(String(clientSecret.paillierN))
+  ) {
+    throw new Error(
+      'd1 Paillier N ≠ Enc(d1) on coordinator — this tab is not the dealer that birthed d1',
+    );
+  }
   verifySignC({
-    paillierN: clientSecret.paillierN,
-    paillierG: clientSecret.paillierG,
+    paillierN: pubN,
+    paillierG: pubG,
     ckey: String(ckeyAdj),
     c: ciphertext,
     Q2Hex,
@@ -282,7 +298,7 @@ export function clientSignFinish({
     m: hexToScalar(hashHex),
     r: hexToScalar(rHex),
     pokC,
-    sid: sid || hashHex,
+    sid,
     aux: 0,
   });
   const k1 = hexToScalar(k1Hex);

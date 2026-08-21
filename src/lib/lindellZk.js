@@ -144,6 +144,109 @@ export function encryptWithR(pub, m) {
   return { c, r };
 }
 
+/**
+ * PoK of (x, r) s.t. c = Enc(x; r) under (N,g) and Q = x·G.
+ * Witness is encryption randomness, not Paillier λ — so d2 can prove Enc(d2)
+ * under d1's public (N,g) without the dealer key.
+ */
+export function proveEncEqualsDlog({
+  x,
+  rEnc,
+  c,
+  paillierN,
+  paillierG,
+  Qhex,
+  context = '',
+}) {
+  const pub = new PublicKey(BigInt(paillierN), BigInt(paillierG));
+  const N = pub.n;
+  const xx = BigInt(x);
+  const Qn = String(Qhex || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+  const want = pointHex(ecMul(G, xx));
+  if (want !== Qn) {
+    throw new Error('ENC_DLOG: x·G ≠ Q');
+  }
+  const xPrime = randomBelow(CURVE_N << 128n);
+  const rPrime = randomCoprimeTo(N);
+  const Tenc = pub.encrypt(xPrime, rPrime);
+  const Tpt = pointHex(ecMul(G, xPrime));
+  const e = BigInt(
+    '0x' +
+      sha256Hex(
+        [
+          'wart-enc-dlog-v1',
+          String(context || ''),
+          String(N),
+          String(c),
+          Qn,
+          String(Tenc),
+          Tpt,
+        ].join('|'),
+      ).slice(0, 32),
+  );
+  const zr = (rPrime * modPow(BigInt(rEnc), e, N)) % N;
+  return {
+    Tenc: Tenc.toString(10),
+    Tpt,
+    e: e.toString(10),
+    zx: (xPrime + e * xx).toString(10),
+    zr: zr.toString(10),
+    context: String(context || ''),
+  };
+}
+
+export function verifyEncEqualsDlog({
+  c,
+  paillierN,
+  paillierG,
+  Qhex,
+  proof,
+  context = '',
+}) {
+  if (!proof?.Tenc || proof.e == null || proof.zx == null || proof.zr == null) {
+    throw new Error('ENC_DLOG_MISSING: need Enc(x)=x·G proof');
+  }
+  const pub = new PublicKey(BigInt(paillierN), BigInt(paillierG));
+  const N = pub.n;
+  const Qn = String(Qhex || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+  const Tenc = BigInt(proof.Tenc);
+  const Tpt = String(proof.Tpt || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+  const e = BigInt(proof.e);
+  const zx = BigInt(proof.zx);
+  const zr = BigInt(proof.zr);
+  const eWant = BigInt(
+    '0x' +
+      sha256Hex(
+        [
+          'wart-enc-dlog-v1',
+          String(context || proof.context || ''),
+          String(N),
+          String(c),
+          Qn,
+          String(Tenc),
+          Tpt,
+        ].join('|'),
+      ).slice(0, 32),
+  );
+  if (e !== eWant) throw new Error('ENC_DLOG: Fiat-Shamir e mismatch');
+  if (zr <= 0n || zr >= N) throw new Error('ENC_DLOG: r response not in Z_N');
+  const leftEnc = pub.encrypt(zx, zr);
+  const rightEnc = pub.addition(Tenc, pub.multiply(BigInt(c), e));
+  if (leftEnc !== rightEnc) throw new Error('ENC_DLOG: Paillier relation fails');
+  const Q = pointFromHex(Qn);
+  const T = pointFromHex(Tpt);
+  if (pointHex(ecMul(G, zx)) !== pointHex(ecMul(Q, e).add(T))) {
+    throw new Error('ENC_DLOG: zx·G ≠ T + e·Q');
+  }
+  return { ok: true };
+}
+
 function commitHex(parts) {
   const nonce = bytesToHex(randomBytes(32));
   const msg = ['wart-lindell-com-v1', ...parts.map(String), nonce].join('|');
