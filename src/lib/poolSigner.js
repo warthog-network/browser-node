@@ -453,7 +453,7 @@ async function maybeBirthNextQ(share, api) {
             ? 2
             : null;
   if (!role) return null;
-  const { makeClientSeat } = await import('./pool3pClient.js');
+  const { makeClientSeat, schnorrProveDlog, seatPokContext } = await import('./pool3pClient.js');
   const seat = makeClientSeat(role);
   const body = {
     action: 'pool3p_birth_next',
@@ -462,18 +462,70 @@ async function maybeBirthNextQ(share, api) {
     P: seat.P,
   };
   if (role === 1) {
+    const zk = await import('./lindellZk.js');
     const { generateRandomKeys } = await import('paillier-bigint');
-    const { publicKey: pk, privateKey: sk } = await generateRandomKeys(1024);
-    const enc = pk.encrypt(BigInt('0x' + String(seat.userShareHex).replace(/^0x/i, '')));
-    body.encD1 = enc.toString();
+    const { PAILLIER_BITS } = await import('./pool3pClient.js');
+    const d1 = zk.randomShareLindellRange();
+    seat.userShareHex = zk.scalarToHex(d1);
+    seat.P = await pointOfShare(seat.userShareHex);
+    body.P = seat.P;
+    const { publicKey: pk, privateKey: sk } = await generateRandomKeys(PAILLIER_BITS);
+    const enc = zk.encryptWithR(pk, d1);
+    body.encD1 = enc.c.toString();
     body.paillierN = pk.n.toString();
     body.paillierG = pk.g.toString();
+    body.rangeProof = zk.proveRangeLindell({
+      x: d1,
+      rEnc: enc.r,
+      c: enc.c,
+      paillierN: pk.n.toString(),
+      paillierG: pk.g.toString(),
+      Q1: seat.P,
+      context: seatPokContext('birth-next', 1, seat.P),
+    });
     seat.paillierLambda = sk.lambda.toString();
     seat.paillierMu = sk.mu.toString();
     seat.paillierN = pk.n.toString();
     seat.paillierG = pk.g.toString();
   }
-  const ack = await poolPost(api, body);
+  body.pok = schnorrProveDlog(seat.userShareHex, seatPokContext('birth-next', role, seat.P));
+  let ack = await poolPost(api, body);
+  if (role === 1 && ack?.needPdl) {
+    const zk = await import('./lindellZk.js');
+    const pr = zk.pdlProverCommit({
+      cPrime: ack.pdl.cPrime,
+      paillierN: seat.paillierN,
+      paillierG: seat.paillierG,
+      paillierLambda: seat.paillierLambda,
+      paillierMu: seat.paillierMu,
+    });
+    const opened = await poolPost(api, {
+      action: 'pool3p_pdl_commit',
+      signerId: share.signerId,
+      comQ: pr.comQ,
+      kind: 'birth-next',
+    });
+    zk.pdlProverFinish({
+      alpha: pr.alpha,
+      x1: BigInt('0x' + String(seat.userShareHex).replace(/^0x/i, '')),
+      a: opened.a,
+      b: opened.b,
+      Qhat: pr.Qhat,
+      comQ: pr.comQ,
+      nonceQ: pr.nonceQ,
+      comAB: opened.comAB,
+      nonceAB: opened.nonceAB,
+      Q1: seat.P,
+    });
+    ack = await poolPost(api, {
+      action: 'pool3p_pdl_finish',
+      signerId: share.signerId,
+      Qhat: pr.Qhat,
+      nonceQ: pr.nonceQ,
+      comQ: pr.comQ,
+      kind: 'birth-next',
+    });
+  }
   const born = {
     ...seat,
     scheme: 'wart-3p-ecdsa-lindell-v1',
@@ -512,11 +564,15 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
         await storageSet(ID_KEY, cached.signerId);
       }
       try {
+        const { schnorrProveDlog, seatPokContext } = await import('./pool3pClient.js');
         await poolPost(api, {
           action: 'pool3p_claim_born',
           signerId: cached.signerId || signerId,
           role,
-          shareHex: cached.userShareHex,
+          pok: schnorrProveDlog(
+            cached.userShareHex,
+            seatPokContext('claim', role, cached.P || P),
+          ),
         });
         liveShare = { ...cached, clientBorn: true, waitlist: false, role };
         return liveShare;
@@ -645,7 +701,7 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
 }
 
 async function birthAndUploadSeat(signerId, role, api, hint) {
-  const { makeClientSeat } = await import('./pool3pClient.js');
+  const { makeClientSeat, schnorrProveDlog, seatPokContext } = await import('./pool3pClient.js');
   const seat = makeClientSeat(role);
   const body = {
     action: 'pool3p_birth',
@@ -654,20 +710,70 @@ async function birthAndUploadSeat(signerId, role, api, hint) {
     P: seat.P,
   };
   if (Number(role) === 1) {
+    const zk = await import('./lindellZk.js');
     const { generateRandomKeys } = await import('paillier-bigint');
-    const { publicKey: pk, privateKey: sk } = await generateRandomKeys(1024);
-    const enc = pk.encrypt(
-      BigInt('0x' + String(seat.userShareHex).replace(/^0x/i, '')),
-    );
-    body.encD1 = enc.toString();
+    const { PAILLIER_BITS } = await import('./pool3pClient.js');
+    const d1 = zk.randomShareLindellRange();
+    seat.userShareHex = zk.scalarToHex(d1);
+    seat.P = await pointOfShare(seat.userShareHex);
+    body.P = seat.P;
+    const { publicKey: pk, privateKey: sk } = await generateRandomKeys(PAILLIER_BITS);
+    const enc = zk.encryptWithR(pk, d1);
+    body.encD1 = enc.c.toString();
     body.paillierN = pk.n.toString();
     body.paillierG = pk.g.toString();
+    body.rangeProof = zk.proveRangeLindell({
+      x: d1,
+      rEnc: enc.r,
+      c: enc.c,
+      paillierN: pk.n.toString(),
+      paillierG: pk.g.toString(),
+      Q1: seat.P,
+      context: seatPokContext('birth', 1, seat.P),
+    });
     seat.paillierLambda = sk.lambda.toString();
     seat.paillierMu = sk.mu.toString();
     seat.paillierN = pk.n.toString();
     seat.paillierG = pk.g.toString();
   }
-  const ack = await poolPost(api, body);
+  body.pok = schnorrProveDlog(seat.userShareHex, seatPokContext('birth', role, seat.P));
+  let ack = await poolPost(api, body);
+  if (Number(role) === 1 && ack?.needPdl) {
+    const zk = await import('./lindellZk.js');
+    const pr = zk.pdlProverCommit({
+      cPrime: ack.pdl.cPrime,
+      paillierN: seat.paillierN,
+      paillierG: seat.paillierG,
+      paillierLambda: seat.paillierLambda,
+      paillierMu: seat.paillierMu,
+    });
+    const opened = await poolPost(api, {
+      action: 'pool3p_pdl_commit',
+      signerId,
+      comQ: pr.comQ,
+      kind: 'birth',
+    });
+    zk.pdlProverFinish({
+      alpha: pr.alpha,
+      x1: BigInt('0x' + String(seat.userShareHex).replace(/^0x/i, '')),
+      a: opened.a,
+      b: opened.b,
+      Qhat: pr.Qhat,
+      comQ: pr.comQ,
+      nonceQ: pr.nonceQ,
+      comAB: opened.comAB,
+      nonceAB: opened.nonceAB,
+      Q1: seat.P,
+    });
+    ack = await poolPost(api, {
+      action: 'pool3p_pdl_finish',
+      signerId,
+      Qhat: pr.Qhat,
+      nonceQ: pr.nonceQ,
+      comQ: pr.comQ,
+      kind: 'birth',
+    });
+  }
   const share = {
     scheme: 'wart-3p-ecdsa-lindell-v1',
     role: Number(role),
@@ -791,11 +897,12 @@ async function tryRecoverFromPack(signerId, role, api, hint) {
   if (!hex) {
     throw new Error(`orbit pack reconstructed but did not match live P${role}`);
   }
+  const { schnorrProveDlog, seatPokContext } = await import('./pool3pClient.js');
   const ack = await poolPost(api, {
     action: 'pool3p_claim_born',
     signerId,
     role,
-    shareHex: hex,
+    pok: schnorrProveDlog(hex, seatPokContext('claim', role, want || (await pointOfShare(hex)))),
   });
   return {
     scheme: 'wart-3p-ecdsa-lindell-v1',
@@ -1191,15 +1298,17 @@ async function ensureD1Paillier(share, api) {
     throw err;
   }
   const { generateRandomKeys } = await import('paillier-bigint');
-  const { publicKey: pk, privateKey: sk } = await generateRandomKeys(1024);
+  const { PAILLIER_BITS, schnorrProveDlog, seatPokContext } = await import('./pool3pClient.js');
+  const { publicKey: pk, privateKey: sk } = await generateRandomKeys(PAILLIER_BITS);
   const enc = pk.encrypt(BigInt('0x' + String(share.userShareHex).replace(/^0x/i, '')));
+  const P = await pointOfShare(share.userShareHex);
   const ack = await poolPost(api, {
     action: 'pool3p_rekey_d1',
     signerId: share.signerId,
-    d1Hex: share.userShareHex,
     encD1: enc.toString(),
     paillierN: pk.n.toString(),
     paillierG: pk.g.toString(),
+    pok: schnorrProveDlog(share.userShareHex, seatPokContext('rekey', 1, P)),
   });
   if (!ack?.ok) {
     const err = new Error(ack?.error || 'd1 Paillier rekey failed');
@@ -1306,6 +1415,13 @@ async function sign3pAsRole1(share, req, api) {
       hashHex: st.hashHex || k1.hashHex,
       clientSecret: ready,
       publicKey: poolPub,
+      RHex: st.RHex,
+      pokR: st.pokR,
+      pokC: st.pokC,
+      R2Hex: st.R2Hex,
+      Q2Hex: st.Q2Hex,
+      ckeyAdj: st.ckeyAdj,
+      sid: req.ticketId,
     });
   let fin;
   try {

@@ -5,6 +5,7 @@
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { PublicKey, PrivateKey } from 'paillier-bigint';
+import { verifySignC } from './lindellZk.js';
 
 const CURVE_N = secp256k1.CURVE.n;
 const G = secp256k1.ProjectivePoint.BASE;
@@ -118,6 +119,51 @@ export function makeClientSeat(role) {
   };
 }
 
+export const PAILLIER_BITS = 2048;
+
+function schnorrChallenge(Phex, Rhex, context) {
+  const msg = [
+    'wart-3p-schnorr-v1',
+    String(context || ''),
+    String(Phex || '').replace(/^0x/i, '').toLowerCase(),
+    String(Rhex || '').replace(/^0x/i, '').toLowerCase(),
+  ].join('|');
+  return hexToScalar(bytesToHex(sha256(new TextEncoder().encode(msg))));
+}
+
+export function seatPokContext(kind, role, Phex) {
+  return [
+    'wart-3p-seat',
+    String(kind || ''),
+    String(Number(role || 0)),
+    String(Phex || '')
+      .replace(/^0x/i, '')
+      .toLowerCase(),
+  ].join('|');
+}
+
+/** Schnorr PoK of dlog(P). Does NOT prove Enc(d) encrypts that dlog. */
+export function schnorrProveDlog(shareHex, context) {
+  const d = hexToScalar(shareHex);
+  const Phex = pointToCompressedHex(G.multiply(d));
+  let k;
+  let Rhex;
+  let e;
+  for (let i = 0; i < 8; i++) {
+    k = randomScalar();
+    Rhex = pointToCompressedHex(G.multiply(k));
+    e = schnorrChallenge(Phex, Rhex, context);
+    if (e !== 0n) break;
+  }
+  if (!e) throw new Error('schnorr challenge was 0');
+  return {
+    P: Phex,
+    R: Rhex,
+    s: scalarToHex(modN(k + e * d)),
+    context: String(context || ''),
+  };
+}
+
 export function clientSignRound1() {
   const k1 = randomScalar();
   return {
@@ -126,10 +172,119 @@ export function clientSignRound1() {
   };
 }
 
-export function clientSignFinish({ k1Hex, rHex, ciphertext, hashHex, clientSecret, publicKey }) {
+function normPubHex(hex) {
+  return String(hex || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+}
+
+function schnorrChallengeOnBase(statementHex, commitHex, baseHex, context) {
+  const msg = [
+    'wart-3p-schnorr-base-v1',
+    String(context || ''),
+    normPubHex(baseHex),
+    normPubHex(statementHex),
+    normPubHex(commitHex),
+  ].join('|');
+  return hexToScalar(bytesToHex(sha256(new TextEncoder().encode(msg))));
+}
+
+function lindellRPokContext({ R1Hex, RHex, rHex, hashHex, ciphertext }) {
+  const cHash = bytesToHex(sha256(new TextEncoder().encode(String(ciphertext || ''))));
+  return [
+    'wart-3p-r-eq-k2r1-v1',
+    normPubHex(R1Hex),
+    normPubHex(RHex),
+    String(rHex || '')
+      .replace(/^0x/i, '')
+      .toLowerCase(),
+    String(hashHex || '')
+      .replace(/^0x/i, '')
+      .toLowerCase(),
+    cHash,
+  ].join('|');
+}
+
+function verifyLindellR({ pok, k1Hex, R1Hex, RHex, rHex, hashHex, ciphertext }) {
+  if (!pok?.R || !pok?.s) {
+    throw new Error('LINDELL_R_POK_MISSING: need Schnorr that R = k2·R1');
+  }
+  if (!RHex) throw new Error('LINDELL_R_POK_MISSING: need RHex');
+  const k1 = hexToScalar(k1Hex);
+  const R1got = pointToCompressedHex(G.multiply(k1));
+  const R1n = normPubHex(R1Hex || R1got);
+  if (normPubHex(R1got) !== R1n) {
+    throw new Error('LINDELL_R_POK: R1 ≠ k1·G');
+  }
+  const R = secp256k1.ProjectivePoint.fromHex(normPubHex(RHex));
+  if (modN(R.toAffine().x) !== hexToScalar(rHex)) {
+    throw new Error('LINDELL_R_POK: r ≠ Rx(R) mod n');
+  }
+  const ctx = lindellRPokContext({
+    R1Hex: R1n,
+    RHex,
+    rHex,
+    hashHex,
+    ciphertext,
+  });
+  const statementHex = normPubHex(RHex);
+  const Base = secp256k1.ProjectivePoint.fromHex(R1n);
+  const Statement = secp256k1.ProjectivePoint.fromHex(statementHex);
+  const T = secp256k1.ProjectivePoint.fromHex(normPubHex(pok.R));
+  const s = hexToScalar(pok.s);
+  const e = schnorrChallengeOnBase(statementHex, normPubHex(pok.R), R1n, ctx);
+  const left = pointToCompressedHex(Base.multiply(s));
+  const right = pointToCompressedHex(T.add(Statement.multiply(e)));
+  if (left !== right) {
+    throw new Error('LINDELL_R_POK: s·R1 ≠ T + e·R — coordinator does not know k2');
+  }
+  return true;
+}
+
+export function clientSignFinish({
+  k1Hex,
+  rHex,
+  ciphertext,
+  hashHex,
+  clientSecret,
+  publicKey,
+  RHex,
+  R1Hex,
+  pokR,
+  pokC,
+  R2Hex,
+  Q2Hex,
+  ckeyAdj,
+  sid,
+}) {
   if (!clientSecret?.paillierN || !clientSecret?.paillierLambda) {
     throw new Error('d1 seat missing Paillier key — re-enroll this tab as d1');
   }
+  verifyLindellR({
+    pok: pokR,
+    k1Hex,
+    R1Hex,
+    RHex,
+    rHex,
+    hashHex,
+    ciphertext,
+  });
+  if (!Q2Hex || !R2Hex || ckeyAdj == null) {
+    throw new Error('LINDELL_C_ZK_MISSING: need Q2Hex, R2Hex, and ckeyAdj');
+  }
+  verifySignC({
+    paillierN: clientSecret.paillierN,
+    paillierG: clientSecret.paillierG,
+    ckey: String(ckeyAdj),
+    c: ciphertext,
+    Q2Hex,
+    R2Hex,
+    m: hexToScalar(hashHex),
+    r: hexToScalar(rHex),
+    pokC,
+    sid: sid || hashHex,
+    aux: 0,
+  });
   const k1 = hexToScalar(k1Hex);
   const r = hexToScalar(rHex);
   const pub = new PublicKey(BigInt(clientSecret.paillierN), BigInt(clientSecret.paillierG));
