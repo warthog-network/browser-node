@@ -1090,6 +1090,9 @@ async function applyIncomingShare(raw, prev) {
   if (!raw || raw.waitlist || (Number(raw.role) !== 1 && Number(raw.role) !== 2)) {
     return null;
   }
+  if (raw.needBirth) {
+    return null;
+  }
   if (raw.clientBorn && !raw.userShareHex && !raw.shareHex && prev?.userShareHex) {
     const livePdapp = compactPointHex(raw.Pdapp || raw.seal?.Pdapp || '');
     const prevPdapp = compactPointHex(prev.Pdapp || prev.seal?.Pdapp || '');
@@ -1154,7 +1157,12 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
     const iAmHolder2 = r.holder2 === share.signerId || r.holders?.['2']?.signerId === share.signerId;
     const wantRole = iAmHolder1 ? 1 : iAmHolder2 ? 2 : assigned;
     const seal0 = r.seal || next.seal;
+    const livePdapp = compactPointHex(r.Pdapp || r.share?.Pdapp || r.seal?.Pdapp);
+    const minePdapp = compactPointHex(next.Pdapp || next.seal?.Pdapp);
+    const needBirth = !!(r.needBirth || r.share?.needBirth);
     let hexMatchesLive = true;
+    if (needBirth) hexMatchesLive = false;
+    if (livePdapp && minePdapp && livePdapp !== minePdapp) hexMatchesLive = false;
     if ((wantRole === 1 || wantRole === 2) && next.userShareHex && seal0) {
       try {
         const { verifyShareSeal } = await import('./pool3pClient.js');
@@ -1170,7 +1178,8 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
     }
     if (
       (wantRole === 1 || wantRole === 2) &&
-      (next.waitlist ||
+      (needBirth ||
+        next.waitlist ||
         Number(next.role) !== wantRole ||
         !next.userShareHex ||
         !hexMatchesLive)
