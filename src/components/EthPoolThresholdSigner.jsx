@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   enrollEthSigner,
   fetchEth3pStatus,
@@ -78,37 +78,43 @@ export default function EthPoolThresholdSigner() {
     };
   }, [join]);
 
+  const shareRef = useRef(share);
+  shareRef.current = share;
   useEffect(() => {
-    if (!enabled || !share) return undefined;
+    if (!enabled) return undefined;
     let stop = false;
+    let inflight = false;
     const tick = async () => {
-      if (stop) return;
+      if (stop || inflight) return;
+      inflight = true;
       try {
-        const hb = await heartbeatEth(share);
+        const cur = shareRef.current;
+        if (!cur) return;
+        const hb = await heartbeatEth(cur);
+        if (stop) return;
         if (hb?.share) setShare(hb.share);
-        if (hb?.holder1 || hb?.orbit) {
-          setEth3p((p) => ({
-            ...(p || {}),
-            holder1: hb.holder1 ?? p?.holder1,
-            holder2: hb.holder2 ?? p?.holder2,
-            orbit: hb.orbit || p?.orbit,
-            address: hb.address || p?.address,
-            seatsReady: p?.seatsReady,
-          }));
-        }
-        const st = await fetchEth3pStatus().catch(() => null);
-        if (st) setEth3p(st);
+        setEth3p((p) => ({
+          ...(p || {}),
+          holder1: hb.holder1 ?? p?.holder1,
+          holder2: hb.holder2 ?? p?.holder2,
+          orbit: hb.orbit || p?.orbit,
+          address: hb.address || p?.address,
+          e1Live: hb.orbit?.live?.includes(hb.holder1),
+          e2Live: hb.orbit?.live?.includes(hb.holder2),
+        }));
       } catch (e) {
-        setError(e?.message || String(e));
+        if (!stop) setError(e?.message || String(e));
+      } finally {
+        inflight = false;
       }
     };
     tick();
-    const id = setInterval(tick, 2000);
+    const id = setInterval(tick, 2500);
     return () => {
       stop = true;
       clearInterval(id);
     };
-  }, [enabled, share]);
+  }, [enabled]);
 
   const toggle = async () => {
     const next = !enabled;
