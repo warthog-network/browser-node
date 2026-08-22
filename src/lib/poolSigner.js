@@ -654,7 +654,11 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
       cached?.userShareHex &&
       r.Pdapp &&
       compactPointHex(cached.Pdapp || cached.seal?.Pdapp || '') === compactPointHex(r.Pdapp);
-    if (sameDapp) {
+    const sameAddr =
+      !r.poolAddress ||
+      !cached?.poolAddress ||
+      normHex(cached.poolAddress) === normHex(r.poolAddress);
+    if (sameDapp && sameAddr) {
       liveShare = cached;
       return cached;
     }
@@ -834,6 +838,8 @@ async function birthAndUploadSeat(signerId, role, api, hint) {
     signerId,
     poolAddress: ack.address || hint.poolAddress || null,
     publicKey: ack.publicKey || hint.publicKey || null,
+    Pdapp: ack.Pdapp || hint.Pdapp || ack.seal?.Pdapp || hint.seal?.Pdapp || null,
+    P: seat.P,
     source: 'client-born',
     waitlist: false,
     clientBorn: true,
@@ -1085,15 +1091,25 @@ async function applyIncomingShare(raw, prev) {
     return null;
   }
   if (raw.clientBorn && !raw.userShareHex && !raw.shareHex && prev?.userShareHex) {
-    raw = {
-      ...raw,
-      userShareHex: prev.userShareHex,
-      shareHex: prev.userShareHex,
-      paillierLambda: prev.paillierLambda,
-      paillierMu: prev.paillierMu,
-      paillierN: prev.paillierN,
-      paillierG: prev.paillierG,
-    };
+    const livePdapp = compactPointHex(raw.Pdapp || raw.seal?.Pdapp || '');
+    const prevPdapp = compactPointHex(prev.Pdapp || prev.seal?.Pdapp || '');
+    const liveAddr = normHex(raw.poolAddress || raw.address || raw.seal?.address);
+    const prevAddr = normHex(prev.poolAddress || prev.seal?.address);
+    const pdappOk = !livePdapp || !prevPdapp || livePdapp === prevPdapp;
+    const addrOk = !liveAddr || !prevAddr || liveAddr === prevAddr;
+    if (pdappOk && addrOk) {
+      raw = {
+        ...raw,
+        userShareHex: prev.userShareHex,
+        shareHex: prev.userShareHex,
+        paillierLambda: prev.paillierLambda,
+        paillierMu: prev.paillierMu,
+        paillierN: prev.paillierN,
+        paillierG: prev.paillierG,
+        Pdapp: prev.Pdapp || raw.Pdapp,
+        P: prev.P,
+      };
+    }
   }
   const share = normalizeShare({ ...raw, source: raw.source || 'heartbeat' });
   if (!share || share.waitlist) return null;
@@ -1162,10 +1178,16 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
       next = await enrollSigner(share.signerId, api);
       if (next?.userShareHex) return { ...r, share: next, shareUpdated: true };
     }
-    const vacantSeat =
-      !(r.holder1 || r.holders?.['1']?.signerId) ||
-      !(r.holder2 || r.holders?.['2']?.signerId);
-    if ((next.waitlist || Number(next.role) === 0) && vacantSeat) {
+    const liveIds = r.orbit?.live || [];
+    const h1 = r.holder1 || r.holders?.['1']?.signerId;
+    const h2 = r.holder2 || r.holders?.['2']?.signerId;
+    const ghostOrVacant =
+      !h1 ||
+      !h2 ||
+      (h1 && !liveIds.includes(h1)) ||
+      (h2 && !liveIds.includes(h2)) ||
+      Number(r.recoverVacant || 0) > 0;
+    if ((next.waitlist || Number(next.role) === 0) && ghostOrVacant) {
       try {
         const recovered = await enrollSigner(share.signerId, api);
         if (recovered && !recovered.waitlist && recovered.userShareHex) {
