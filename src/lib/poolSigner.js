@@ -644,7 +644,11 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
   }
   if (r.needBirth && (r.role === 1 || r.role === 2)) {
     const cached = await readBornCache(signerId, r.role);
-    if (cached?.userShareHex) {
+    const sameDapp =
+      cached?.userShareHex &&
+      r.Pdapp &&
+      compactPointHex(cached.Pdapp || cached.seal?.Pdapp || '') === compactPointHex(r.Pdapp);
+    if (sameDapp) {
       liveShare = cached;
       return cached;
     }
