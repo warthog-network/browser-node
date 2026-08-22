@@ -129,8 +129,20 @@ export default function EthPoolThresholdSigner() {
           lastPaidTx.current = paidTx;
           signedUntil.current = Date.now() + 12000;
         }
+        const rot = hb.rotation || {};
+        const nxt = rot.next;
         if ((hb.open || []).length) {
           setLog(`room ${hb.open[0].ticketId} · ${hb.open[0].status}`);
+        } else if (rot.phase && rot.phase !== 'idle') {
+          const n1 = nxt?.seatsReady?.['1'] || nxt?.seatsReady?.[1];
+          const n2 = nxt?.seatsReady?.['2'] || nxt?.seatsReady?.[2];
+          setLog(
+            `rotate ${rot.phase}` +
+              (nxt
+                ? ` · next e1 ${n1 ? 'born' : 'need birth'} · next e2 ${n2 ? 'born' : 'need birth'}`
+                : '') +
+              (rot.lastError ? ` · ${rot.lastError}` : ''),
+          );
         } else if (Date.now() < signedUntil.current && paidTx) {
           setLog(`paid ${paidTx.slice(0, 10)}…`);
         } else {
