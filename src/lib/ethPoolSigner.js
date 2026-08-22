@@ -281,7 +281,9 @@ async function contributeEthOpen(share, open, api) {
         const { seatPokContext } = await import('./pool3pClient.js');
         const n = st?.paillierN || req.paillierN;
         const g = st?.paillierG || req.paillierG;
-        const P2 = String(st?.seal?.P2 || '').replace(/^0x/i, '').toLowerCase();
+        const P2 = String(st?.seal?.P2 || req.P2Hex || '')
+          .replace(/^0x/i, '')
+          .toLowerCase();
         if (!n || !g || !P2) continue;
         const x = BigInt('0x' + String(share.userShareHex).replace(/^0x/i, ''));
         const pub = new PublicKey(BigInt(n), BigInt(g));

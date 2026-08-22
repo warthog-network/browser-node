@@ -123,6 +123,7 @@ export default function EthPoolThresholdSigner() {
           lastPaid: hb.lastPaid ?? p?.lastPaid,
           burnBin: p?.burnBin,
           rotation: hb.rotation ?? p?.rotation,
+          signed: hb.signed ?? p?.signed,
         }));
         const paidTx = hb.lastPaid?.txHash || hb.lastPaid?.payout?.txHash || '';
         if (paidTx && paidTx !== lastPaidTx.current) {
@@ -369,10 +370,51 @@ export default function EthPoolThresholdSigner() {
             {eth3p?.address ? `ETH Q ${eth3p.address}` : 'Waiting for e1 + e2 birth'}
             {eth3p?.burnBin ? ` · burn bin ${shortId(eth3p.burnBin)}` : ''}
             {eth3p?.rotation
-              ? ` · rotate ${eth3p.rotation.phase || 'idle'} in ${eth3p.rotation.dueInEpochs ?? '—'} ep`
+              ? ` · rotate ${eth3p.rotation.phase || 'idle'} · ${eth3p.rotation.dueInEpochs ?? '—'} epochs` +
+                (eth3p.rotation.intervalEpochs
+                  ? ` / ${eth3p.rotation.intervalEpochs}`
+                  : '') +
+                (eth3p.rotation.next?.address
+                  ? ` · next ${String(eth3p.rotation.next.address).slice(0, 10)}…`
+                  : '')
               : ''}
           </p>
           <p className="pool-signer__meta">{log}</p>
+          <ul className="pool-signer__slots" aria-label="live ETH orbit">
+            {(eth3p?.orbit?.live || []).length === 0 ? (
+              <li>No live ETH orbit yet</li>
+            ) : (
+              (eth3p.orbit.live || []).map((id) => (
+                <li key={id} className={id === share?.signerId ? 'is-me' : undefined}>
+                  {shortId(id)}
+                  {id === eth3p?.holder1 ? ' · e1' : ''}
+                  {id === eth3p?.holder2 ? ' · e2' : ''}
+                  {id === share?.signerId ? ' · you' : ''}
+                </li>
+              ))
+            )}
+          </ul>
+          <details className="pool-signer__history" open={(eth3p?.signed || []).length > 0}>
+            <summary>
+              Signed
+              <span>{(eth3p?.signed || []).length}</span>
+            </summary>
+            {(eth3p?.signed || []).length === 0 ? (
+              <p className="pool-signer__meta">No paid ETH 3P txs in this session yet.</p>
+            ) : (
+              <ul className="pool-signer__slots pool-signer__slots--history">
+                {(eth3p.signed || []).map((row) => (
+                  <li key={row.txHash || row.ticketId}>
+                    {row.kind === 'rotate-sweep' || String(row.ticketId || '').startsWith('eth-rotate')
+                      ? 'sweep · '
+                      : 'redeem · '}
+                    {shortTicket(row.ticketId)}
+                    {row.txHash ? ` · ${shortTx(row.txHash)}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </details>
         </>
       ) : null}
     </section>
