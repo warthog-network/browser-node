@@ -111,6 +111,10 @@ function bornKey(signerId, role) {
   return `eth.poolSigner.born.${signerId}.${role}`;
 }
 
+function nextBornKey(signerId, role) {
+  return `eth.poolSigner.born.next.${signerId}.${role}`;
+}
+
 async function writeBornCache(share) {
   if (!share?.userShareHex || !(share.role === 1 || share.role === 2)) return;
   await storageSet(bornKey(share.signerId, share.role), share);
@@ -467,7 +471,7 @@ async function maybeBirthEthNext(share, api) {
     paillierN: seat.paillierN || null,
     paillierG: seat.paillierG || null,
   };
-  writeBornCache(born);
+  await storageSet(nextBornKey(share.signerId, role), born);
   return born;
 }
 
