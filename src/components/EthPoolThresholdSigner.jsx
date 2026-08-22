@@ -307,6 +307,40 @@ export default function EthPoolThresholdSigner() {
               </div>
             </div>
           ) : null}
+          {eth3p?.rotation && eth3p.rotation.phase && eth3p.rotation.phase !== 'idle' ? (
+            <ol className="pool-signer__steps" aria-label="ETH next-Q birth">
+              <li
+                className={
+                  eth3p.rotation.next?.seatsReady?.['1'] || eth3p.rotation.next?.seatsReady?.[1]
+                    ? 'is-done'
+                    : 'is-wait'
+                }
+              >
+                <span>n1</span> next e1{' '}
+                {eth3p.rotation.next?.seatsReady?.['1'] || eth3p.rotation.next?.seatsReady?.[1]
+                  ? 'born'
+                  : 'need birth'}
+              </li>
+              <li
+                className={
+                  eth3p.rotation.next?.seatsReady?.['2'] || eth3p.rotation.next?.seatsReady?.[2]
+                    ? 'is-done'
+                    : 'is-wait'
+                }
+              >
+                <span>n2</span> next e2{' '}
+                {eth3p.rotation.next?.seatsReady?.['2'] || eth3p.rotation.next?.seatsReady?.[2]
+                  ? 'born'
+                  : 'need birth'}
+              </li>
+              <li className={eth3p.rotation.phase === 'sweeping' || eth3p.rotation.phase === 'cutover' ? 'is-done' : 'is-wait'}>
+                <span>s</span> sweep {eth3p.rotation.phase === 'sweeping' ? 'in room' : eth3p.rotation.phase === 'cutover' || eth3p.rotation.sweepTxHash ? 'done' : 'idle'}
+              </li>
+              <li className={eth3p.rotation.phase === 'idle' && eth3p.rotation.last ? 'is-done' : 'is-wait'}>
+                <span>c</span> cutover {eth3p.rotation.last?.address ? 'done' : eth3p.rotation.phase}
+              </li>
+            </ol>
+          ) : null}
           {enabled ? (
             <ol className="pool-signer__steps" aria-label="ETH Lindell progress">
               <li className={steps.e1 ? 'is-done' : 'is-wait'}>
