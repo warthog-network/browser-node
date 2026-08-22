@@ -257,6 +257,105 @@ export async function enrollEthSigner(api = DEFAULT_POOL_API) {
   return r;
 }
 
+const k1ByTicket = new Map();
+
+async function contributeEthOpen(share, open, api) {
+  if (!share?.userShareHex || !Array.isArray(open) || !open.length) return;
+  const role = Number(share.role || 0);
+  const st = await fetchEth3pStatus(api).catch(() => null);
+  for (const req of open) {
+    const id = String(req.ticketId || '');
+    if (!id || req.status === 'paid') continue;
+    try {
+      if (role === 2) {
+        const zk = await import('./lindellZk.js');
+        const { PublicKey } = await import('paillier-bigint');
+        const { seatPokContext } = await import('./pool3pClient.js');
+        const n = st?.paillierN || req.paillierN;
+        const g = st?.paillierG || req.paillierG;
+        const P2 = String(st?.seal?.P2 || '').replace(/^0x/i, '').toLowerCase();
+        if (!n || !g || !P2) continue;
+        const x = BigInt('0x' + String(share.userShareHex).replace(/^0x/i, ''));
+        const pub = new PublicKey(BigInt(n), BigInt(g));
+        const enc = zk.encryptWithR(pub, x);
+        const ctx = `${seatPokContext('offer-d2', 2, P2)}|${id}`;
+        const body = {
+          action: 'eth3p_d2',
+          ticketId: id,
+          signerId: share.signerId,
+          encD2: enc.c.toString(),
+          encDlogProof: zk.proveEncEqualsDlog({
+            x,
+            rEnc: enc.r,
+            c: enc.c,
+            paillierN: n,
+            paillierG: g,
+            Qhex: P2,
+            context: ctx,
+          }),
+        };
+        if (x >= zk.LINDELL_Q_THIRD && x <= 2n * zk.LINDELL_Q_THIRD) {
+          body.rangeProof = zk.proveRangeLindell({
+            x,
+            rEnc: enc.r,
+            c: enc.c,
+            paillierN: n,
+            paillierG: g,
+            Q1: P2,
+            context: ctx,
+          });
+        }
+        await poolPost(api, body);
+      } else if (role === 1) {
+        const { clientSignRound1, clientSignFinish } = await import('./pool3pClient.js');
+        let t = await poolPost(api, { action: 'eth3p_ticket', ticketId: id });
+        let k1 = k1ByTicket.get(id);
+        if (!k1 || !t.haveR1) {
+          const rnd = clientSignRound1();
+          k1 = { ...rnd, hashHex: t.hashHex };
+          await poolPost(api, {
+            action: 'eth3p_r1',
+            ticketId: id,
+            signerId: share.signerId,
+            R1Hex: rnd.R1Hex,
+            hashHex: t.hashHex,
+          });
+          k1ByTicket.set(id, k1);
+          t = await poolPost(api, { action: 'eth3p_ticket', ticketId: id });
+        }
+        if (!t.hasPartial) continue;
+        const fin = clientSignFinish({
+          k1Hex: k1.k1Hex,
+          rHex: t.rHex,
+          ciphertext: t.ciphertext,
+          hashHex: t.hashHex || k1.hashHex,
+          clientSecret: share,
+          publicKey: st?.seal?.publicKey || st?.publicKey,
+          RHex: t.RHex,
+          pokR: t.pokR,
+          pokC: t.pokC,
+          R2Hex: t.R2Hex,
+          Q2Hex: t.Q2Hex,
+          ckeyAdj: t.ckeyAdj,
+          sid: id,
+          paillierN: t.paillierN,
+          paillierG: t.paillierG,
+        });
+        if (fin?.signature65) {
+          await poolPost(api, {
+            action: 'eth3p_submit',
+            ticketId: id,
+            signature65: fin.signature65,
+          });
+          k1ByTicket.delete(id);
+        }
+      }
+    } catch {
+      /* next heartbeat retries */
+    }
+  }
+}
+
 export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
   const signerId = share?.signerId || (await getOrCreateSignerId());
   const r = await poolPost(api, {
@@ -264,16 +363,23 @@ export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
     signerId,
     seatEpoch: share?.seatEpoch ?? 0,
   });
+  let nextShare = share;
   if (r.needBirth && (r.role === 1 || r.role === 2 || r.share?.needBirth)) {
     const role = Number(r.role || r.share?.role || 0);
     if (role === 1 || role === 2) {
       const born = await enrollEthSigner(api);
-      return { ...r, share: born, shareUpdated: true };
+      nextShare = born;
     }
   }
-  if (r.share?.needBirth && (r.share.role === 1 || r.share.role === 2)) {
-    const born = await birthAndUploadSeat(signerId, r.share.role, api, r.share);
-    return { ...r, share: born, shareUpdated: true };
+  if (r.share?.needBirth && (r.share.role === 1 || r.share.role === 2) && !nextShare?.userShareHex) {
+    nextShare = await birthAndUploadSeat(signerId, r.share.role, api, r.share);
+  }
+  const live = nextShare?.userShareHex ? nextShare : share;
+  if (live?.userShareHex && (r.open || []).length) {
+    await contributeEthOpen(live, r.open, api);
+  }
+  if (nextShare && nextShare !== share) {
+    return { ...r, share: nextShare, shareUpdated: true };
   }
   return r;
 }
