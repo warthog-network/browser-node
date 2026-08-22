@@ -350,8 +350,8 @@ async function contributeEthOpen(share, open, api) {
           k1ByTicket.delete(id);
         }
       }
-    } catch {
-      /* next heartbeat retries */
+    } catch (e) {
+      console.warn('[eth3p contribute]', id, e?.message || e);
     }
   }
 }
@@ -363,25 +363,24 @@ export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
     signerId,
     seatEpoch: share?.seatEpoch ?? 0,
   });
-  let nextShare = share;
-  if (r.needBirth && (r.role === 1 || r.role === 2 || r.share?.needBirth)) {
-    const role = Number(r.role || r.share?.role || 0);
-    if (role === 1 || role === 2) {
-      const born = await enrollEthSigner(api);
-      nextShare = born;
-    }
+  const role = Number(r.role || r.share?.role || share?.role || 0);
+  let hexShare = share?.userShareHex ? share : liveShare;
+  if (!hexShare?.userShareHex && (role === 1 || role === 2)) {
+    const cached = await readBornCache(signerId, role);
+    if (cached?.userShareHex) hexShare = { ...r.share, ...cached };
   }
-  if (r.share?.needBirth && (r.share.role === 1 || r.share.role === 2) && !nextShare?.userShareHex) {
-    nextShare = await birthAndUploadSeat(signerId, r.share.role, api, r.share);
+  if (r.needBirth && (role === 1 || role === 2) && !hexShare?.userShareHex) {
+    hexShare = await enrollEthSigner(api);
   }
-  const live = nextShare?.userShareHex ? nextShare : share;
+  const live = hexShare?.userShareHex ? hexShare : share;
   if (live?.userShareHex && (r.open || []).length) {
-    await contributeEthOpen(live, r.open, api);
+    await contributeEthOpen({ ...live, role, signerId }, r.open, api);
   }
-  if (nextShare && nextShare !== share) {
-    return { ...r, share: nextShare, shareUpdated: true };
-  }
-  return r;
+  const merged = live?.userShareHex
+    ? { ...(r.share || {}), ...live, userShareHex: live.userShareHex, role }
+    : r.share || share;
+  liveShare = merged;
+  return { ...r, share: merged };
 }
 
 export async function loadActiveEthShare() {
