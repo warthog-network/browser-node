@@ -187,7 +187,7 @@ export default function EthPoolThresholdSigner() {
         : room && room.status !== 'paid'
           ? 'In the room'
           : seatLabel(share);
-  const statusClass = steps.paid ? 'signed' : room && !steps.paid ? 'signing' : enabled ? 'idle' : 'idle';
+  const statusClass = steps.paid ? 'ok' : room && !steps.paid ? 'signing' : enabled ? 'idle' : 'idle';
   const controls = (
     <div className="pool-signer__controls">
       <button
