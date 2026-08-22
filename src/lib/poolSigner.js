@@ -240,11 +240,13 @@ async function postD2Offer(share, req, api, p3, startHex) {
     const n = fresh?.paillierN || p3?.paillierN;
     const g = fresh?.paillierG || p3?.paillierG;
     const P2 = compactPointHex(fresh?.seal?.P2 || p3?.seal?.P2 || '');
-    if (!fresh?.address) {
-      throw new Error('pool Q not sealed yet — wait for d1 birth (Enc(d1) N,g)');
-    }
-    if (!n || !g || !P2) {
-      throw new Error('d2 Enc offer needs pool Paillier N,g and P2 — hard-refresh this tab');
+    if (!fresh?.address || !n || !g || !P2) {
+      return {
+        ok: true,
+        waiting: true,
+        ticketId: req.ticketId,
+        error: 'waiting for sealed pool Enc(d1) (N,g) and P2',
+      };
     }
     if (!hex) throw new Error('d2 hex missing in this tab');
     const zk = await import('./lindellZk.js');
