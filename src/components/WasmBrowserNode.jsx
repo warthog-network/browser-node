@@ -48,6 +48,7 @@ import {
 } from '../lib/snapshotPublic.js';
 import { formatHashrate, shortAddr } from '../lib/presets.js';
 import PoolThresholdSigner from './PoolThresholdSigner.jsx';
+import EthPoolThresholdSigner from './EthPoolThresholdSigner.jsx';
 import './NodeDashboard.css';
 
 const MAX_LOG = 400;
@@ -1026,6 +1027,7 @@ export default function WasmBrowserNode() {
       )}
 
       <PoolThresholdSigner />
+      <EthPoolThresholdSigner />
 
       <section className="panel hero">
         <p className="hero__status">{friendlyStatus}</p>

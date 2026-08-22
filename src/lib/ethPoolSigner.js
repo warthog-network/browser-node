@@ -1,0 +1,296 @@
+/**
+ * ETH 3P signer (e1/e2). Separate storage from WART d1/d2 (wart.poolSigner.*).
+ * Birth + heartbeat only here; ETH Lindell pay lands after wrap/unwrap tickets.
+ */
+export const DEFAULT_POOL_API = 'https://cartesi-bridge.duckdns.org/api/pool';
+
+const ENABLED_KEY = 'eth.poolSigner.enabled';
+const PANEL_KEY = 'eth.poolSigner.panelOpen';
+const ID_KEY = 'eth.poolSigner.signerId';
+const SHARE_KEY = 'eth.poolSigner.enrolledShare';
+
+let liveShare = null;
+
+function uuid() {
+  if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+async function storageGet(k) {
+  try {
+    if (globalThis.chrome?.storage?.local) {
+      const o = await chrome.storage.local.get(k);
+      return o?.[k];
+    }
+  } catch {
+    /* */
+  }
+  try {
+    return localStorage.getItem(k);
+  } catch {
+    return null;
+  }
+}
+
+async function storageSet(k, v) {
+  try {
+    if (globalThis.chrome?.storage?.local) {
+      await chrome.storage.local.set({ [k]: v });
+      return;
+    }
+  } catch {
+    /* */
+  }
+  try {
+    localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v));
+  } catch {
+    /* */
+  }
+}
+
+async function storageRemove(k) {
+  try {
+    if (globalThis.chrome?.storage?.local) await chrome.storage.local.remove(k);
+  } catch {
+    /* */
+  }
+  try {
+    localStorage.removeItem(k);
+  } catch {
+    /* */
+  }
+}
+
+async function poolPost(api, body) {
+  const res = await fetch(api || DEFAULT_POOL_API, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || j.error) throw new Error(j.error || j.message || `eth3p ${res.status}`);
+  return j;
+}
+
+export async function readEnabled() {
+  const v = await storageGet(ENABLED_KEY);
+  return v === true || v === '1' || v === 'true';
+}
+
+export async function writeEnabled(on) {
+  await storageSet(ENABLED_KEY, on ? '1' : '0');
+}
+
+export async function readPanelOpen() {
+  const v = await storageGet(PANEL_KEY);
+  return v !== '0' && v !== false;
+}
+
+export async function writePanelOpen(open) {
+  await storageSet(PANEL_KEY, open ? '1' : '0');
+}
+
+async function getOrCreateSignerId() {
+  let id = await storageGet(ID_KEY);
+  if (id && String(id).startsWith('eth-node-')) return String(id);
+  id = `eth-node-${uuid()}`;
+  await storageSet(ID_KEY, id);
+  return id;
+}
+
+function bornKey(signerId, role) {
+  return `eth.poolSigner.born.${signerId}.${role}`;
+}
+
+async function writeBornCache(share) {
+  if (!share?.userShareHex || !(share.role === 1 || share.role === 2)) return;
+  await storageSet(bornKey(share.signerId, share.role), share);
+}
+
+async function readBornCache(signerId, role) {
+  const raw = await storageGet(bornKey(signerId, role));
+  if (raw && typeof raw === 'object') return raw;
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function pointOfShare(hex) {
+  const { secp256k1 } = await import('@noble/curves/secp256k1');
+  const h = String(hex).replace(/^0x/i, '');
+  const d = BigInt('0x' + h);
+  const bytes = secp256k1.ProjectivePoint.BASE.multiply(d).toRawBytes(true);
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function birthAndUploadSeat(signerId, role, api, hint) {
+  const { makeClientSeat, schnorrProveDlog, seatPokContext, PAILLIER_BITS } =
+    await import('./pool3pClient.js');
+  const seat = makeClientSeat(role);
+  const body = {
+    action: 'eth3p_birth',
+    signerId,
+    role,
+    P: seat.P,
+  };
+  if (Number(role) === 1) {
+    const zk = await import('./lindellZk.js');
+    const { generateRandomKeys } = await import('paillier-bigint');
+    const d1 = zk.randomShareLindellRange();
+    seat.userShareHex = zk.scalarToHex(d1);
+    seat.P = await pointOfShare(seat.userShareHex);
+    body.P = seat.P;
+    const { publicKey: pk, privateKey: sk } = await generateRandomKeys(PAILLIER_BITS);
+    const enc = zk.encryptWithR(pk, d1);
+    body.encD1 = enc.c.toString();
+    body.paillierN = pk.n.toString();
+    body.paillierG = pk.g.toString();
+    body.rangeProof = zk.proveRangeLindell({
+      x: d1,
+      rEnc: enc.r,
+      c: enc.c,
+      paillierN: pk.n.toString(),
+      paillierG: pk.g.toString(),
+      Q1: seat.P,
+      context: seatPokContext('birth', 1, seat.P),
+    });
+    seat.paillierLambda = sk.lambda.toString();
+    seat.paillierMu = sk.mu.toString();
+    seat.paillierN = pk.n.toString();
+    seat.paillierG = pk.g.toString();
+  }
+  body.pok = schnorrProveDlog(seat.userShareHex, seatPokContext('birth', role, seat.P));
+  let ack = await poolPost(api, body);
+  if (Number(role) === 1 && ack?.needPdl) {
+    const zk = await import('./lindellZk.js');
+    const pr = zk.pdlProverCommit({
+      cPrime: ack.pdl.cPrime,
+      paillierN: seat.paillierN,
+      paillierG: seat.paillierG,
+      paillierLambda: seat.paillierLambda,
+      paillierMu: seat.paillierMu,
+    });
+    const opened = await poolPost(api, {
+      action: 'eth3p_pdl_commit',
+      signerId,
+      comQ: pr.comQ,
+    });
+    zk.pdlProverFinish({
+      alpha: pr.alpha,
+      x1: BigInt('0x' + String(seat.userShareHex).replace(/^0x/i, '')),
+      a: opened.a,
+      b: opened.b,
+      Qhat: pr.Qhat,
+      comQ: pr.comQ,
+      nonceQ: pr.nonceQ,
+      comAB: opened.comAB,
+      nonceAB: opened.nonceAB,
+      Q1: seat.P,
+    });
+    ack = await poolPost(api, {
+      action: 'eth3p_pdl_finish',
+      signerId,
+      Qhat: pr.Qhat,
+      nonceQ: pr.nonceQ,
+      comQ: pr.comQ,
+    });
+  }
+  const share = {
+    scheme: 'eth-3p-ecdsa-lindell-v1',
+    role: Number(role),
+    shareIndex: Number(role),
+    shareHex: seat.userShareHex,
+    userShareHex: seat.userShareHex,
+    signerId,
+    poolAddress: ack.address || hint.poolAddress || null,
+    publicKey: ack.publicKey || hint.publicKey || null,
+    Pdapp: ack.Pdapp || hint.Pdapp || null,
+    P: seat.P,
+    clientBorn: true,
+    waitlist: false,
+    seatEpoch: ack.seal?.seatEpoch ?? 0,
+    seal: ack.seal || null,
+    paillierLambda: seat.paillierLambda || null,
+    paillierMu: seat.paillierMu || null,
+    paillierN: seat.paillierN || null,
+    paillierG: seat.paillierG || null,
+    message: ack.ready ? `e${role} born — ETH pool address ready` : `e${role} born`,
+  };
+  writeBornCache(share);
+  liveShare = share;
+  return share;
+}
+
+export async function enrollEthSigner(api = DEFAULT_POOL_API) {
+  const signerId = await getOrCreateSignerId();
+  const r = await poolPost(api, { action: 'eth3p_enroll', signerId });
+  if (r.needBirth && (r.role === 1 || r.role === 2)) {
+    const cached = await readBornCache(signerId, r.role);
+    const same =
+      cached?.userShareHex &&
+      r.Pdapp &&
+      String(cached.Pdapp || cached.seal?.Pdapp || '').toLowerCase() ===
+        String(r.Pdapp).toLowerCase();
+    if (same) {
+      liveShare = cached;
+      return cached;
+    }
+    return birthAndUploadSeat(signerId, r.role, api, r);
+  }
+  if (r.clientBorn && (r.role === 1 || r.role === 2) && !r.needBirth) {
+    const cached = await readBornCache(signerId, r.role);
+    if (cached?.userShareHex) {
+      liveShare = { ...r, ...cached, userShareHex: cached.userShareHex };
+      return liveShare;
+    }
+  }
+  liveShare = r;
+  await storageSet(ID_KEY, signerId);
+  await storageRemove(SHARE_KEY);
+  return r;
+}
+
+export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
+  const signerId = share?.signerId || (await getOrCreateSignerId());
+  const r = await poolPost(api, {
+    action: 'eth3p_heartbeat',
+    signerId,
+    seatEpoch: share?.seatEpoch ?? 0,
+  });
+  if (r.needBirth && (r.role === 1 || r.role === 2 || r.share?.needBirth)) {
+    const role = Number(r.role || r.share?.role || 0);
+    if (role === 1 || role === 2) {
+      const born = await enrollEthSigner(api);
+      return { ...r, share: born, shareUpdated: true };
+    }
+  }
+  if (r.share?.needBirth && (r.share.role === 1 || r.share.role === 2)) {
+    const born = await birthAndUploadSeat(signerId, r.share.role, api, r.share);
+    return { ...r, share: born, shareUpdated: true };
+  }
+  return r;
+}
+
+export async function loadActiveEthShare() {
+  if (liveShare) return liveShare;
+  return enrollEthSigner();
+}
+
+export async function fetchEth3pStatus(api = DEFAULT_POOL_API) {
+  return poolPost(api, { action: 'eth3p_status' });
+}
+
+export function stopEthSigningLocal() {
+  liveShare = null;
+}
+
+export async function readEthStats() {
+  return { signedCount: 0, history: [] };
+}
