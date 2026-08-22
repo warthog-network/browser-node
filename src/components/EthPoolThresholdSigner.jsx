@@ -238,12 +238,38 @@ export default function EthPoolThresholdSigner() {
                 <strong>
                   {share?.role === 1 ? 'YOU' : eth3p?.holder1 ? shortId(eth3p.holder1) : 'vacant'}
                 </strong>
+                <span>
+                  {steps.paid
+                    ? 'signed'
+                    : steps.e1
+                      ? 'R1 in'
+                      : share?.role === 1
+                        ? 'Lindell finish'
+                        : eth3p?.e1Live
+                          ? 'live'
+                          : eth3p?.holder1
+                            ? 'assigned'
+                            : 'vacant'}
+                </span>
               </div>
               <div className={`pool-signer__seat${share?.role === 2 ? ' is-you' : ''}${eth3p?.holder2 ? ' is-held' : ''}`}>
                 <span className="pool-signer__seat-k">e2</span>
                 <strong>
                   {share?.role === 2 ? 'YOU' : eth3p?.holder2 ? shortId(eth3p.holder2) : 'vacant'}
                 </strong>
+                <span>
+                  {steps.paid
+                    ? 'signed'
+                    : steps.e2
+                      ? 'share in'
+                      : share?.role === 2
+                        ? 'additive share'
+                        : eth3p?.e2Live
+                          ? 'live'
+                          : eth3p?.holder2
+                            ? 'assigned'
+                            : 'vacant'}
+                </span>
               </div>
             </div>
           ) : null}
