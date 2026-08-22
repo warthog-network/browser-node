@@ -48,6 +48,8 @@ export default function EthPoolThresholdSigner() {
   const [eth3p, setEth3p] = useState(null);
   const [log, setLog] = useState('ETH 3P off');
   const [error, setError] = useState(null);
+  const signedUntil = useRef(0);
+  const lastPaidTx = useRef('');
 
   const join = useCallback(async () => {
     const s = await loadActiveEthShare();
@@ -121,11 +123,22 @@ export default function EthPoolThresholdSigner() {
           lastPaid: hb.lastPaid ?? p?.lastPaid,
           burnBin: p?.burnBin,
         }));
+        const paidTx = hb.lastPaid?.txHash || hb.lastPaid?.payout?.txHash || '';
+        if (paidTx && paidTx !== lastPaidTx.current) {
+          lastPaidTx.current = paidTx;
+          signedUntil.current = Date.now() + 12000;
+        }
         if ((hb.open || []).length) {
+          setLog(`room ${hb.open[0].ticketId} · ${hb.open[0].status}`);
+        } else if (Date.now() < signedUntil.current && paidTx) {
+          setLog(`paid ${paidTx.slice(0, 10)}…`);
+        } else {
           setLog(
-            hb.open[0].status === 'paid'
-              ? `paid ${hb.open[0].txHash || ''}`.trim()
-              : `room ${hb.open[0].ticketId} · ${hb.open[0].status}`,
+            cur.role === 1
+              ? 'holding e1 — Enc(e1) stays in this tab'
+              : cur.role === 2
+                ? 'holding e2'
+                : 'ETH orbit',
           );
         }
       } catch (e) {
@@ -172,22 +185,30 @@ export default function EthPoolThresholdSigner() {
   };
 
   const liveN = eth3p?.orbit?.liveCount || 0;
-  const room = (eth3p?.open || [])[0] || eth3p?.lastPaid || null;
+  const openRoom = (eth3p?.open || []).find((t) => t.status !== 'paid') || null;
+  const showPaid = !openRoom && Date.now() < signedUntil.current && eth3p?.lastPaid;
+  const room = openRoom || (showPaid ? eth3p.lastPaid : null);
+  const paidNow = !!(
+    room &&
+    (room.status === 'paid' || room.txHash || room.payout?.txHash)
+  );
   const steps = {
-    e1: !!(room?.haveR1 || room?.R1Hex),
-    e2: !!(room?.haveD2),
-    lindell: !!(room?.hasPartial || room?.ciphertext || room?.status === 'partial' || room?.status === 'paid'),
-    paid: room?.status === 'paid' || !!(room?.txHash || room?.payout?.txHash),
+    e1: paidNow || !!(room?.haveR1 || room?.R1Hex),
+    e2: paidNow || !!room?.haveD2,
+    lindell:
+      paidNow ||
+      !!(room?.hasPartial || room?.ciphertext || room?.status === 'partial'),
+    paid: paidNow,
   };
   const phase =
     !enabled
       ? 'Off'
-      : steps.paid
+      : paidNow
         ? 'Paid'
-        : room && room.status !== 'paid'
+        : openRoom
           ? 'In the room'
           : seatLabel(share);
-  const statusClass = steps.paid ? 'ok' : room && !steps.paid ? 'signing' : enabled ? 'idle' : 'idle';
+  const statusClass = paidNow ? 'ok' : openRoom ? 'signing' : 'idle';
   const controls = (
     <div className="pool-signer__controls">
       <button
