@@ -324,6 +324,12 @@ async function contributeEthOpen(share, open, api) {
         const { clientSignRound1, clientSignFinish } = await import('./pool3pClient.js');
         let t = await poolPost(api, { action: 'eth3p_ticket', ticketId: id });
         let k1 = k1ByTicket.get(id);
+        const ticketHash = String(t.hashHex || '').replace(/^0x/i, '').toLowerCase();
+        const k1Hash = String(k1?.hashHex || '').replace(/^0x/i, '').toLowerCase();
+        if (k1 && ticketHash && k1Hash && k1Hash !== ticketHash) {
+          k1ByTicket.delete(id);
+          k1 = null;
+        }
         if (!k1 || !t.haveR1) {
           const rnd = clientSignRound1();
           k1 = { ...rnd, hashHex: t.hashHex };

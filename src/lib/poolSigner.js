@@ -1495,6 +1495,20 @@ async function sign3pAsRole1(share, req, api) {
 
   let k1 = loadK1(req.ticketId);
   let st = await poolPost(api, { action: 'pool3p_ticket', ticketId: req.ticketId });
+  const ticketHash = String(st.hashHex || '').replace(/^0x/i, '').toLowerCase();
+  const k1Hash = String(k1?.hashHex || '').replace(/^0x/i, '').toLowerCase();
+  if (k1 && ticketHash && k1Hash && k1Hash !== ticketHash) {
+    dropK1(req.ticketId);
+    k1 = null;
+    if (st.haveR1 || st.hasPartial) {
+      await poolPost(api, {
+        action: 'pool3p_reset_r1',
+        ticketId: req.ticketId,
+        signerId: ready.signerId,
+      }).catch(() => null);
+      st = await poolPost(api, { action: 'pool3p_ticket', ticketId: req.ticketId });
+    }
+  }
   if (k1 && st.R1Hex && k1.R1Hex && String(k1.R1Hex).toLowerCase() !== String(st.R1Hex).toLowerCase()) {
     dropK1(req.ticketId);
     k1 = null;
