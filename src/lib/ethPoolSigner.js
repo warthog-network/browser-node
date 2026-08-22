@@ -364,6 +364,111 @@ async function contributeEthOpen(share, open, api) {
   }
 }
 
+async function maybeBirthEthNext(share, api) {
+  const st = await fetchEth3pStatus(api).catch(() => null);
+  const need = st?.rotation?.next?.needBirth;
+  const bornBy = st?.rotation?.next?.bornBy || {};
+  if (!need || (!need[1] && !need['1'] && !need[2] && !need['2'])) return null;
+  if (bornBy[1] === share.signerId || bornBy[2] === share.signerId) return null;
+  const liveRole = Number(share.role || 0);
+  const need1 = !!(need[1] || need['1']);
+  const need2 = !!(need[2] || need['2']);
+  const role =
+    need1 && liveRole === 1 ? 1 : need2 && liveRole === 2 ? 2 : need1 ? 1 : need2 ? 2 : null;
+  if (!role) return null;
+  const { makeClientSeat, schnorrProveDlog, seatPokContext, PAILLIER_BITS } =
+    await import('./pool3pClient.js');
+  const seat = makeClientSeat(role);
+  const body = {
+    action: 'eth3p_birth_next',
+    signerId: share.signerId,
+    role,
+    P: seat.P,
+  };
+  if (role === 1) {
+    const zk = await import('./lindellZk.js');
+    const { generateRandomKeys } = await import('paillier-bigint');
+    const d1 = zk.randomShareLindellRange();
+    seat.userShareHex = zk.scalarToHex(d1);
+    seat.P = await pointOfShare(seat.userShareHex);
+    body.P = seat.P;
+    const { publicKey: pk, privateKey: sk } = await generateRandomKeys(PAILLIER_BITS);
+    const enc = zk.encryptWithR(pk, d1);
+    body.encD1 = enc.c.toString();
+    body.paillierN = pk.n.toString();
+    body.paillierG = pk.g.toString();
+    body.rangeProof = zk.proveRangeLindell({
+      x: d1,
+      rEnc: enc.r,
+      c: enc.c,
+      paillierN: pk.n.toString(),
+      paillierG: pk.g.toString(),
+      Q1: seat.P,
+      context: seatPokContext('birth-next', 1, seat.P),
+    });
+    seat.paillierLambda = sk.lambda.toString();
+    seat.paillierMu = sk.mu.toString();
+    seat.paillierN = pk.n.toString();
+    seat.paillierG = pk.g.toString();
+  }
+  body.pok = schnorrProveDlog(seat.userShareHex, seatPokContext('birth-next', role, seat.P));
+  let ack = await poolPost(api, body);
+  if (role === 1 && ack?.needPdl) {
+    const zk = await import('./lindellZk.js');
+    const pr = zk.pdlProverCommit({
+      cPrime: ack.pdl.cPrime,
+      paillierN: seat.paillierN,
+      paillierG: seat.paillierG,
+      paillierLambda: seat.paillierLambda,
+      paillierMu: seat.paillierMu,
+    });
+    const opened = await poolPost(api, {
+      action: 'eth3p_pdl_commit_next',
+      signerId: share.signerId,
+      comQ: pr.comQ,
+    });
+    zk.pdlProverFinish({
+      alpha: pr.alpha,
+      x1: BigInt('0x' + String(seat.userShareHex).replace(/^0x/i, '')),
+      a: opened.a,
+      b: opened.b,
+      Qhat: pr.Qhat,
+      comQ: pr.comQ,
+      nonceQ: pr.nonceQ,
+      comAB: opened.comAB,
+      nonceAB: opened.nonceAB,
+      Q1: seat.P,
+    });
+    ack = await poolPost(api, {
+      action: 'eth3p_pdl_finish_next',
+      signerId: share.signerId,
+      Qhat: pr.Qhat,
+      nonceQ: pr.nonceQ,
+      comQ: pr.comQ,
+    });
+  }
+  const born = {
+    scheme: 'eth-3p-ecdsa-lindell-v1',
+    role,
+    shareHex: seat.userShareHex,
+    userShareHex: seat.userShareHex,
+    signerId: share.signerId,
+    poolAddress: ack.address || null,
+    publicKey: ack.publicKey || null,
+    Pdapp: ack.Pdapp || ack.seal?.Pdapp || null,
+    P: seat.P,
+    nextQ: true,
+    clientBorn: true,
+    seal: ack.seal || null,
+    paillierLambda: seat.paillierLambda || null,
+    paillierMu: seat.paillierMu || null,
+    paillierN: seat.paillierN || null,
+    paillierG: seat.paillierG || null,
+  };
+  writeBornCache(born);
+  return born;
+}
+
 export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
   const signerId = share?.signerId || (await getOrCreateSignerId());
   const r = await poolPost(api, {
@@ -383,6 +488,11 @@ export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
   const live = hexShare?.userShareHex ? hexShare : share;
   if (live?.userShareHex && (r.open || []).length) {
     await contributeEthOpen({ ...live, role, signerId }, r.open, api);
+  }
+  if (live?.userShareHex) {
+    await maybeBirthEthNext({ ...live, role, signerId }, api).catch((e) =>
+      console.warn('[eth3p birth_next]', e?.message || e),
+    );
   }
   const merged = live?.userShareHex
     ? { ...(r.share || {}), ...live, userShareHex: live.userShareHex, role }

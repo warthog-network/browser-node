@@ -122,6 +122,7 @@ export default function EthPoolThresholdSigner() {
           open: hb.open ?? p?.open,
           lastPaid: hb.lastPaid ?? p?.lastPaid,
           burnBin: p?.burnBin,
+          rotation: hb.rotation ?? p?.rotation,
         }));
         const paidTx = hb.lastPaid?.txHash || hb.lastPaid?.payout?.txHash || '';
         if (paidTx && paidTx !== lastPaidTx.current) {
@@ -321,6 +322,9 @@ export default function EthPoolThresholdSigner() {
           <p className="pool-signer__meta">
             {eth3p?.address ? `ETH Q ${eth3p.address}` : 'Waiting for e1 + e2 birth'}
             {eth3p?.burnBin ? ` · burn bin ${shortId(eth3p.burnBin)}` : ''}
+            {eth3p?.rotation
+              ? ` · rotate ${eth3p.rotation.phase || 'idle'} in ${eth3p.rotation.dueInEpochs ?? '—'} ep`
+              : ''}
           </p>
           <p className="pool-signer__meta">{log}</p>
         </>
