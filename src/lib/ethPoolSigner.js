@@ -64,14 +64,21 @@ async function storageRemove(k) {
 }
 
 async function poolPost(api, body) {
-  const res = await fetch(api || DEFAULT_POOL_API, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok || j.error) throw new Error(j.error || j.message || `eth3p ${res.status}`);
-  return j;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 20000);
+  try {
+    const res = await fetch(api || DEFAULT_POOL_API, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ac.signal,
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || j.error) throw new Error(j.error || j.message || `eth3p ${res.status}`);
+    return j;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function readEnabled() {
@@ -262,7 +269,8 @@ const k1ByTicket = new Map();
 async function contributeEthOpen(share, open, api) {
   if (!share?.userShareHex || !Array.isArray(open) || !open.length) return;
   const role = Number(share.role || 0);
-  const st = await fetchEth3pStatus(api).catch(() => null);
+  const needStatus = open.some((t) => !t.paillierN || !t.paillierG);
+  const st = needStatus ? await fetchEth3pStatus(api).catch(() => null) : null;
   for (const req of open) {
     const id = String(req.ticketId || '');
     if (!id || req.status === 'paid') continue;

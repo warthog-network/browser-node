@@ -11,6 +11,9 @@ import {
   writePanelOpen,
 } from '../lib/ethPoolSigner.js';
 
+const TRANSIENT =
+  /Failed to fetch|fetch failed|NetworkError|Load failed|aborted|AbortError|502|503|504|network|ECONNRESET/i;
+
 function shortId(id) {
   const s = String(id || '');
   if (s.length <= 18) return s;
@@ -104,6 +107,7 @@ export default function EthPoolThresholdSigner() {
         if (!cur) return;
         const hb = await heartbeatEth(cur);
         if (stop) return;
+        setError(null);
         if (hb?.share) setShare(hb.share);
         setEth3p((p) => ({
           ...(p || {}),
@@ -125,7 +129,13 @@ export default function EthPoolThresholdSigner() {
           );
         }
       } catch (e) {
-        if (!stop) setError(e?.message || String(e));
+        const msg = e?.message || String(e);
+        if (stop) return;
+        if (TRANSIENT.test(msg) || e?.name === 'AbortError') {
+          setLog('ETH coordinator unreachable — retrying');
+          return;
+        }
+        setError(msg);
       } finally {
         inflight = false;
       }
