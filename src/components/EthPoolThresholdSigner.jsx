@@ -17,6 +17,18 @@ function shortId(id) {
   return `${s.slice(0, 10)}…${s.slice(-4)}`;
 }
 
+function shortTicket(id) {
+  const s = String(id || '');
+  if (s.length <= 22) return s;
+  return `${s.slice(0, 14)}…`;
+}
+
+function shortTx(id) {
+  const s = String(id || '');
+  if (s.length <= 18) return s;
+  return `${s.slice(0, 10)}…${s.slice(-8)}`;
+}
+
 function seatLabel(share) {
   if (!share) return 'joining';
   if (share.waitlist) return 'orbit voter';
@@ -101,7 +113,17 @@ export default function EthPoolThresholdSigner() {
           address: hb.address || p?.address,
           e1Live: hb.orbit?.live?.includes(hb.holder1),
           e2Live: hb.orbit?.live?.includes(hb.holder2),
+          open: hb.open ?? p?.open,
+          lastPaid: hb.lastPaid ?? p?.lastPaid,
+          burnBin: p?.burnBin,
         }));
+        if ((hb.open || []).length) {
+          setLog(
+            hb.open[0].status === 'paid'
+              ? `paid ${hb.open[0].txHash || ''}`.trim()
+              : `room ${hb.open[0].ticketId} · ${hb.open[0].status}`,
+          );
+        }
       } catch (e) {
         if (!stop) setError(e?.message || String(e));
       } finally {
@@ -140,6 +162,22 @@ export default function EthPoolThresholdSigner() {
   };
 
   const liveN = eth3p?.orbit?.liveCount || 0;
+  const room = (eth3p?.open || [])[0] || eth3p?.lastPaid || null;
+  const steps = {
+    e1: !!(room?.haveR1 || room?.R1Hex),
+    e2: !!(room?.haveD2),
+    lindell: !!(room?.hasPartial || room?.ciphertext || room?.status === 'partial' || room?.status === 'paid'),
+    paid: room?.status === 'paid' || !!(room?.txHash || room?.payout?.txHash),
+  };
+  const phase =
+    !enabled
+      ? 'Off'
+      : steps.paid
+        ? 'Paid'
+        : room && room.status !== 'paid'
+          ? 'In the room'
+          : seatLabel(share);
+  const statusClass = steps.paid ? 'signed' : room && !steps.paid ? 'signing' : enabled ? 'idle' : 'idle';
   const controls = (
     <div className="pool-signer__controls">
       <button
@@ -162,11 +200,13 @@ export default function EthPoolThresholdSigner() {
         <h2>ETH 3P signer (e1 / e2)</h2>
         {controls}
       </div>
-      <div className={`pool-signer__status is-${enabled ? 'idle' : 'idle'}`}>
+      <div className={`pool-signer__status is-${statusClass}`}>
         <span className="pool-signer__dot" aria-hidden />
-        <strong>{enabled ? seatLabel(share) : 'Off'}</strong>
+        <strong>{phase}</strong>
         <span className="pool-signer__count">
-          {enabled ? `${liveN} live · ${eth3p?.address ? 'Q sealed' : 'unsealed'}` : 'not in ETH orbit'}
+          {enabled
+            ? `${seatLabel(share)} · ${liveN} live · ${eth3p?.address ? 'Q sealed' : 'unsealed'}`
+            : 'not in ETH orbit'}
         </span>
       </div>
       {error ? <p className="dash__error">{error}</p> : null}
@@ -196,6 +236,30 @@ export default function EthPoolThresholdSigner() {
                 </strong>
               </div>
             </div>
+          ) : null}
+          {enabled ? (
+            <ol className="pool-signer__steps" aria-label="ETH Lindell progress">
+              <li className={steps.e1 ? 'is-done' : 'is-wait'}>
+                <span>1</span> e1 R1 {steps.e1 ? 'in' : room ? 'waiting' : 'idle'}
+              </li>
+              <li className={steps.e2 ? 'is-done' : 'is-wait'}>
+                <span>2</span> e2 share {steps.e2 ? 'in' : room ? 'waiting' : 'idle'}
+              </li>
+              <li className={steps.lindell ? 'is-done' : 'is-wait'}>
+                <span>3</span> Lindell {steps.lindell ? 'combined' : room ? 'waiting' : 'idle'}
+              </li>
+              <li className={steps.paid ? 'is-done' : 'is-wait'}>
+                <span>4</span> {steps.paid ? 'broadcast' : room ? 'broadcast' : 'idle'}
+              </li>
+            </ol>
+          ) : null}
+          {room ? (
+            <p className="pool-signer__meta">
+              {steps.paid ? 'paid' : 'open'} {shortTicket(room.ticketId)}
+              {room.txHash || room.payout?.txHash
+                ? ` · ${shortTx(room.txHash || room.payout.txHash)}`
+                : ''}
+            </p>
           ) : null}
           <p className="pool-signer__meta">
             {eth3p?.address ? `ETH Q ${eth3p.address}` : 'Waiting for e1 + e2 birth'}
