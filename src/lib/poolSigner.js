@@ -1008,38 +1008,34 @@ function shamirCombineLocal(shares) {
   return acc.toString(16).padStart(64, '0');
 }
 
-async function packNextSeat(share, api) {
+async function packCachedSeat(share, api, role, hex) {
   const st = await fetchPool3pStatus(api).catch(() => null);
   const live = st?.orbit?.live || [];
-  const other = Number(share.role) === 1 ? st?.holder2 : st?.holder1;
+  const other = Number(role) === 1 ? st?.holder2 : st?.holder1;
   const targets = live.filter((id) => id && id !== share.signerId && id !== other);
-  if (targets.length < 2) return null;
-  const sig = targets.slice().sort().join(',');
-  const pack = st?.packs?.[String(share.role)] || st?.packs?.[share.role];
-  if (
-    share.packSig === sig &&
-    share.nextPacked &&
-    pack?.from === share.signerId &&
-    pack?.ready
-  ) {
+  if (targets.length < 2 || !hex) return null;
+  const sig = `${role}:${targets.slice().sort().join(',')}`;
+  const pack = st?.packs?.[String(role)] || st?.packs?.[role];
+  if (share[`packSig${role}`] === sig && pack?.from === share.signerId && pack?.ready) {
     return null;
   }
-  // Pack the live hex so a vacant tab rebuilds the same P (not a new Q).
-  const shares = await shamirSplitLocal(share.userShareHex, targets, 2);
-  const P = await pointOfShare(share.userShareHex);
+  const shares = await shamirSplitLocal(hex, targets, 2);
+  const P = await pointOfShare(hex);
   await poolPost(api, {
     action: 'pool3p_preshare_put',
     signerId: share.signerId,
-    role: share.role,
+    role,
     t: 2,
     Pnext: P,
     delta: '0'.repeat(64),
     shares,
   });
-  share.nextPacked = true;
-  share.packSig = sig;
-  share.packTargets = targets;
+  share[`packSig${role}`] = sig;
   return targets;
+}
+
+async function packNextSeat(share, api) {
+  return packCachedSeat(share, api, share.role, share.userShareHex);
 }
 
 async function shamirSplitLocal(secretHex, ids, t) {
@@ -1282,6 +1278,16 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
         await packNextSeat(next, api);
       } catch {
         /* pack when ≥2 other live signers exist */
+      }
+    }
+    if (!h2 && (r.seal?.P2 || next.seal?.P2)) {
+      try {
+        const cached2 = await findBornCacheForRole(2, r.seal?.P2 || next.seal?.P2);
+        if (cached2?.userShareHex) {
+          await packCachedSeat(next, api, 2, cached2.userShareHex);
+        }
+      } catch {
+        /* born dealer packs vacant d2 so another tab can claim_born */
       }
     }
     try {
@@ -1707,12 +1713,34 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
       }
       const role = Number(share.role || 0);
       const hex = share.userShareHex || share.shareHex;
-      const canOfferD2 =
+      let d2Hex = hex;
+      let canOfferD2 =
         is3pShare(share) &&
         !!hex &&
         (role === 2 || (await hexMatchesLivePoint(hex, p3?.seal?.P2)));
+      if (!canOfferD2 && is3pShare(share) && p3?.seal?.P2) {
+        const cached2 = await findBornCacheForRole(2, p3.seal.P2);
+        if (cached2?.userShareHex) {
+          d2Hex = cached2.userShareHex;
+          canOfferD2 = await hexMatchesLivePoint(d2Hex, p3.seal.P2);
+        }
+      }
       if (canOfferD2) {
-        r = await postD2Offer(share, req, api, p3, hex);
+        r = await postD2Offer(
+          { ...share, role: 2, userShareHex: d2Hex },
+          req,
+          api,
+          p3,
+          d2Hex,
+        );
+        if (role === 1 && r && !r.fatal) {
+          const fin = await sign3pAsRole1(share, req, api);
+          if (fin?.fatal) {
+            results.push({ ticketId: req.ticketId, ...fin, verify });
+            continue;
+          }
+          if (fin?.signature65 || fin?.txHash || fin?.payout?.txHash) r = fin;
+        }
       } else if (share.waitlist || role === 0) {
         r = { ok: true, orbitOnly: true, ticketId: req.ticketId };
       } else if (is3pShare(share) && role === 1) {
