@@ -32,6 +32,18 @@ function shortTx(id) {
   return `${s.slice(0, 10)}…${s.slice(-8)}`;
 }
 
+function e8ToEth(e8) {
+  const n = Number(e8);
+  if (!Number.isFinite(n)) return null;
+  return (n / 1e8).toFixed(2).replace(/\.00$/, '');
+}
+
+function isRotateRow(row) {
+  const kind = String(row?.kind || '');
+  const id = String(row?.ticketId || '');
+  return kind.startsWith('rotate') || id.startsWith('eth-rotate');
+}
+
 function seatLabel(share) {
   if (!share) return 'joining';
   if (share.waitlist) return 'orbit voter';
@@ -419,15 +431,28 @@ export default function EthPoolThresholdSigner() {
               <p className="pool-signer__meta">No paid ETH 3P txs in this session yet.</p>
             ) : (
               <ul className="pool-signer__slots pool-signer__slots--history">
-                {(eth3p.signed || []).map((row) => (
-                  <li key={row.txHash || row.ticketId}>
-                    {row.kind === 'rotate-sweep' || String(row.ticketId || '').startsWith('eth-rotate')
-                      ? 'sweep · '
-                      : 'redeem · '}
-                    {shortTicket(row.ticketId)}
-                    {row.txHash ? ` · ${shortTx(row.txHash)}` : ''}
-                  </li>
-                ))}
+                {(eth3p.signed || []).map((row) => {
+                  const amt = e8ToEth(row.amountE8);
+                  const skip = row.kind === 'rotate-skip' || (isRotateRow(row) && !row.txHash);
+                  const fromTo =
+                    skip && row.fromAddress && row.toAddress
+                      ? `${shortTx(row.fromAddress)}→${shortTx(row.toAddress)}`
+                      : null;
+                  return (
+                    <li key={row.txHash || row.ticketId}>
+                      {amt != null ? `${amt} ETH · ` : ''}
+                      {skip ? `rotate skip · ${fromTo || shortTicket(row.ticketId)}` : shortTicket(row.ticketId)}
+                      {row.txHash ? (
+                        <>
+                          {' · '}
+                          <code className="pool-signer__tx" title={row.txHash}>
+                            {shortTx(row.txHash)}
+                          </code>
+                        </>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </details>
