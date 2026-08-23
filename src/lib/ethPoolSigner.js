@@ -133,6 +133,53 @@ async function readBornCache(signerId, role) {
   return null;
 }
 
+async function readNextBornCache(signerId, role) {
+  const raw = await storageGet(nextBornKey(signerId, role));
+  if (raw && typeof raw === 'object') return raw;
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function compactPt(p) {
+  return String(p || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+}
+
+function ethShareMatchesLive(row, st, role) {
+  if (!row?.userShareHex) return false;
+  const liveP = compactPt(role === 1 ? st?.seal?.P1 : st?.seal?.P2);
+  const rowP = compactPt(row.P || (role === 1 ? row.seal?.P1 : row.seal?.P2));
+  if (liveP && rowP && liveP === rowP) return true;
+  const liveA = String(st?.address || '').toLowerCase();
+  const rowA = String(row.poolAddress || row.seal?.address || row.address || '').toLowerCase();
+  return !!(liveA && rowA && liveA === rowA);
+}
+
+async function loadHexForLiveSeat(signerId, role, st) {
+  const live = await readBornCache(signerId, role);
+  if (ethShareMatchesLive(live, st, role)) return live;
+  const nxt = await readNextBornCache(signerId, role);
+  if (ethShareMatchesLive(nxt, st, role)) {
+    const promoted = {
+      ...nxt,
+      nextQ: false,
+      role,
+      poolAddress: st?.address || nxt.poolAddress,
+      seal: st?.seal || nxt.seal,
+    };
+    await writeBornCache(promoted);
+    return promoted;
+  }
+  return live?.userShareHex ? live : null;
+}
+
 async function pointOfShare(hex) {
   const { secp256k1 } = await import('@noble/curves/secp256k1');
   const h = String(hex).replace(/^0x/i, '');
@@ -494,9 +541,9 @@ export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
   });
   const role = Number(r.role || r.share?.role || share?.role || 0);
   let hexShare = share?.userShareHex ? share : liveShare;
-  if (!hexShare?.userShareHex && (role === 1 || role === 2)) {
-    const cached = await readBornCache(signerId, role);
-    if (cached?.userShareHex) hexShare = { ...r.share, ...cached };
+  if ((role === 1 || role === 2) && !ethShareMatchesLive(hexShare, r, role)) {
+    const cached = await loadHexForLiveSeat(signerId, role, r);
+    if (cached?.userShareHex) hexShare = { ...r.share, ...cached, role };
   }
   if (r.needBirth && (role === 1 || role === 2) && !hexShare?.userShareHex) {
     hexShare = await enrollEthSigner(api);
