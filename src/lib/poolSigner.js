@@ -482,11 +482,12 @@ async function maybeBirthNextQ(share, api) {
   if (promoted) return promoted;
   const need = st?.rotation?.next?.needBirth || st?.rotation?.needBirth;
   const bornBy = st?.rotation?.next?.bornBy || {};
-  if (bornBy[1] === share.signerId || bornBy[2] === share.signerId) return null;
-  if (!need || (!need[1] && !need['1'] && !need[2] && !need['2'])) return null;
+  if (!need) return null;
+  const sid = share?.signerId;
   const liveRole = Number(share.role || 0);
-  const need1 = !!(need[1] || need['1']);
-  const need2 = !!(need[2] || need['2']);
+  const need1 = !!(need[1] || need['1']) && bornBy[1] !== sid;
+  const need2 = !!(need[2] || need['2']) && bornBy[2] !== sid;
+  if (!need1 && !need2) return null;
   // Prefer the live seat holder. Any other live tab may fill a vacant next
   // seat so rotate is not stuck on one sleeping dealer tab.
   const role =

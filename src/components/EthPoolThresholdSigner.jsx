@@ -142,7 +142,8 @@ export default function EthPoolThresholdSigner() {
               (nxt
                 ? ` · next e1 ${n1 ? 'born' : 'need birth'} · next e2 ${n2 ? 'born' : 'need birth'}`
                 : '') +
-              (rot.lastError ? ` · ${rot.lastError}` : ''),
+              (rot.lastError ? ` · ${rot.lastError}` : '') +
+              (hb.birthNextError ? ` · ${hb.birthNextError}` : ''),
           );
         } else if (Date.now() < signedUntil.current && paidTx) {
           setLog(`paid ${paidTx.slice(0, 10)}…`);
@@ -337,8 +338,17 @@ export default function EthPoolThresholdSigner() {
               <li className={eth3p.rotation.phase === 'sweeping' || eth3p.rotation.phase === 'cutover' ? 'is-done' : 'is-wait'}>
                 <span>s</span> sweep {eth3p.rotation.phase === 'sweeping' ? 'in room' : eth3p.rotation.phase === 'cutover' || eth3p.rotation.sweepTxHash ? 'done' : 'idle'}
               </li>
-              <li className={eth3p.rotation.phase === 'idle' && eth3p.rotation.last ? 'is-done' : 'is-wait'}>
-                <span>c</span> cutover {eth3p.rotation.last?.address ? 'done' : eth3p.rotation.phase}
+              <li
+                className={
+                  eth3p.rotation.phase === 'idle' && !eth3p.rotation.next ? 'is-done' : 'is-wait'
+                }
+              >
+                <span>c</span> cutover{' '}
+                {eth3p.rotation.phase === 'idle' && !eth3p.rotation.next
+                  ? 'done'
+                  : eth3p.rotation.phase === 'cutover'
+                    ? 'in progress'
+                    : 'waiting'}
               </li>
             </ol>
           ) : null}
@@ -373,6 +383,12 @@ export default function EthPoolThresholdSigner() {
               ? ` · rotate ${eth3p.rotation.phase || 'idle'} · ${eth3p.rotation.dueInEpochs ?? '—'} epochs` +
                 (eth3p.rotation.intervalEpochs
                   ? ` / ${eth3p.rotation.intervalEpochs}`
+                  : '') +
+                (eth3p.rotation.next?.needBirth?.[1] || eth3p.rotation.next?.needBirth?.['1']
+                  ? ' · need next e1'
+                  : '') +
+                (eth3p.rotation.next?.needBirth?.[2] || eth3p.rotation.next?.needBirth?.['2']
+                  ? ' · need next e2'
                   : '') +
                 (eth3p.rotation.next?.address
                   ? ` · next ${String(eth3p.rotation.next.address).slice(0, 10)}…`

@@ -380,11 +380,15 @@ async function maybeBirthEthNext(share, api) {
   const st = await fetchEth3pStatus(api).catch(() => null);
   const need = st?.rotation?.next?.needBirth;
   const bornBy = st?.rotation?.next?.bornBy || {};
-  if (!need || (!need[1] && !need['1'] && !need[2] && !need['2'])) return null;
-  if (bornBy[1] === share.signerId || bornBy[2] === share.signerId) return null;
+  if (!need) return null;
+  const sid = share?.signerId;
   const liveRole = Number(share.role || 0);
-  const need1 = !!(need[1] || need['1']);
-  const need2 = !!(need[2] || need['2']);
+  // A tab that already birthed next e2 must still be allowed to fill vacant next e1
+  // (and vice versa). Skipping the whole function deadlocks rotate when the other
+  // live holder is the only remaining signer.
+  const need1 = !!(need[1] || need['1']) && bornBy[1] !== sid;
+  const need2 = !!(need[2] || need['2']) && bornBy[2] !== sid;
+  if (!need1 && !need2) return null;
   const role =
     need1 && liveRole === 1 ? 1 : need2 && liveRole === 2 ? 2 : need1 ? 1 : need2 ? 2 : null;
   if (!role) return null;
@@ -501,10 +505,14 @@ export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
   if (live?.userShareHex && (r.open || []).length) {
     await contributeEthOpen({ ...live, role, signerId }, r.open, api);
   }
-  if (live?.userShareHex) {
-    await maybeBirthEthNext({ ...live, role, signerId }, api).catch((e) =>
-      console.warn('[eth3p birth_next]', e?.message || e),
-    );
+  try {
+    await maybeBirthEthNext({ ...(live || {}), role, signerId }, api);
+  } catch (e) {
+    const msg = e?.message || String(e);
+    if (!/already born/i.test(msg)) {
+      console.warn('[eth3p birth_next]', msg);
+      r.birthNextError = msg;
+    }
   }
   const merged = live?.userShareHex
     ? { ...(r.share || {}), ...live, userShareHex: live.userShareHex, role }
