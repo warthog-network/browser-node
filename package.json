@@ -3,7 +3,7 @@
   "type": "module",
   "version": "1.5.1",
   "private": true,
-  "description": "Warthog full node in the browser (WASM + pthreads) \u2014 Astro + Netlify",
+  "description": "Warthog full node in the browser (WASM + pthreads) — Astro + Netlify",
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",
@@ -15,7 +15,9 @@
     "snapshot:link": "node scripts/link-public-snapshot.mjs",
     "extension:build": "node scripts/build-extension.mjs",
     "extension:package": "node scripts/package-extension.mjs",
-    "test:eth3p": "node scripts/test-eth3p-seat-recovery.mjs"
+    "test:eth3p": "node scripts/test-eth3p-seat-recovery.mjs",
+    "test:identity": "node scripts/test-node-identity.mjs",
+    "test:preshare": "node scripts/test-sealed-preshare.mjs"
   },
   "dependencies": {
     "@astrojs/netlify": "^6.5.1",
