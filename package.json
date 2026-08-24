@@ -14,7 +14,8 @@
     "test:handshake:wait": "node scripts/test-grunt-handshake.mjs --wait",
     "snapshot:link": "node scripts/link-public-snapshot.mjs",
     "extension:build": "node scripts/build-extension.mjs",
-    "extension:package": "node scripts/package-extension.mjs"
+    "extension:package": "node scripts/package-extension.mjs",
+    "test:eth3p": "node scripts/test-eth3p-seat-recovery.mjs"
   },
   "dependencies": {
     "@astrojs/netlify": "^6.5.1",

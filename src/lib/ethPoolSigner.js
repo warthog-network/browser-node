@@ -63,6 +63,21 @@ async function storageRemove(k) {
   }
 }
 
+async function storageKeys() {
+  try {
+    if (globalThis.chrome?.storage?.local) {
+      return Object.keys((await chrome.storage.local.get(null)) || {});
+    }
+  } catch {
+    /* */
+  }
+  try {
+    return Object.keys(localStorage);
+  } catch {
+    return [];
+  }
+}
+
 async function poolPost(api, body) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 20000);
@@ -152,21 +167,12 @@ function compactPt(p) {
     .toLowerCase();
 }
 
-function ethShareMatchesLive(row, st, role) {
-  if (!row?.userShareHex) return false;
-  const liveP = compactPt(role === 1 ? st?.seal?.P1 : st?.seal?.P2);
-  const rowP = compactPt(row.P || (role === 1 ? row.seal?.P1 : row.seal?.P2));
-  if (liveP && rowP && liveP === rowP) return true;
-  const liveA = String(st?.address || '').toLowerCase();
-  const rowA = String(row.poolAddress || row.seal?.address || row.address || '').toLowerCase();
-  return !!(liveA && rowA && liveA === rowA);
-}
-
 async function loadHexForLiveSeat(signerId, role, st) {
   const live = await readBornCache(signerId, role);
-  if (ethShareMatchesLive(live, st, role)) return live;
+  if (await shareSignsLiveSeat(live, st, role)) return live;
+
   const nxt = await readNextBornCache(signerId, role);
-  if (ethShareMatchesLive(nxt, st, role)) {
+  if (await shareSignsLiveSeat(nxt, st, role)) {
     const promoted = {
       ...nxt,
       nextQ: false,
@@ -177,7 +183,47 @@ async function loadHexForLiveSeat(signerId, role, st) {
     await writeBornCache(promoted);
     return promoted;
   }
-  return live?.userShareHex ? live : null;
+
+  // Neither of this signer's two keys holds a usable secret. Sweep every born
+  // record in the profile before giving up: a rotate that cut over while the tab
+  // was closed, or a regenerated signerId, leaves the real share filed under a
+  // key nothing reads again. The seat is already born, so needBirth stays false
+  // and no re-birth can refill it — this sweep is the only way back that does
+  // not move Q.
+  const mine = new Set([bornKey(signerId, role), nextBornKey(signerId, role)]);
+  for (const key of await storageKeys()) {
+    if (!key.startsWith('eth.poolSigner.born') || mine.has(key)) continue;
+    let row = await storageGet(key);
+    if (typeof row === 'string') {
+      try {
+        row = JSON.parse(row);
+      } catch {
+        continue;
+      }
+    }
+    if (!row || typeof row !== 'object') continue;
+    if (!(await shareSignsLiveSeat(row, st, role))) continue;
+    const recovered = {
+      ...row,
+      nextQ: false,
+      role,
+      signerId,
+      P: compactPt(role === 1 ? st?.seal?.P1 : st?.seal?.P2),
+      poolAddress: st?.address || row.poolAddress,
+      publicKey: st?.seal?.publicKey || st?.publicKey || row.publicKey,
+      Pdapp: st?.Pdapp || st?.seal?.Pdapp || row.Pdapp,
+      seal: st?.seal || row.seal,
+    };
+    await writeBornCache(recovered);
+    console.warn(`[eth3p] recovered seat e${role} share from ${key}`);
+    return recovered;
+  }
+
+  // Deliberately not `live`. Handing a stale-Q secret to the contribute loop is
+  // what produced the silent hang: role 2 throws ENC_DLOG: x·G ≠ Q into the
+  // console on every heartbeat, and role 1 posts an R1 it can never finish, so
+  // the ticket parks at wait_d2 looking half-done.
+  return null;
 }
 
 async function pointOfShare(hex) {
@@ -186,6 +232,50 @@ async function pointOfShare(hex) {
   const d = BigInt('0x' + h);
   const bytes = secp256k1.ProjectivePoint.BASE.multiply(d).toRawBytes(true);
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Why the coordinator has to be told about this.
+ *
+ * A seat is born on the VPS but the secret lives only in the tab that birthed
+ * it, so `needBirth` goes false forever the moment the point is uploaded. If the
+ * tab later loses (or outdates) that secret it keeps the lease and keeps
+ * heartbeating, and every failure below is a console.warn nobody reads. The seat
+ * then reads as healthy — holder set, orbit live, not stranded — while it can
+ * never post R1 or Enc(d2). Surfacing the fault in the heartbeat is the only way
+ * the coordinator can distinguish "waiting" from "cannot sign".
+ */
+let pendingSeatFault = null;
+
+function reportSeatFault(role, reason) {
+  pendingSeatFault = {
+    role: Number(role) || 0,
+    reason: String(reason || 'unknown').slice(0, 300),
+    at: Date.now(),
+  };
+}
+
+function clearSeatFault() {
+  pendingSeatFault = null;
+}
+
+/**
+ * This replaces a check that compared the P *recorded alongside* a cached share
+ * and fell back to matching the pool address. Both are labels the record carries
+ * about itself, not evidence about the secret: a row can name the right P and
+ * hold the wrong hex, and the address fallback matches every row minted for this
+ * Q. Deriving the point from the secret is the only check that answers "can this
+ * tab actually sign for the live seat".
+ */
+async function shareSignsLiveSeat(row, st, role) {
+  if (!row?.userShareHex) return false;
+  const liveP = compactPt(role === 1 ? st?.seal?.P1 : st?.seal?.P2);
+  if (!liveP) return false;
+  try {
+    return (await pointOfShare(row.userShareHex)) === liveP;
+  } catch {
+    return false;
+  }
 }
 
 async function birthAndUploadSeat(signerId, role, api, hint) {
@@ -318,8 +408,16 @@ export async function enrollEthSigner(api = DEFAULT_POOL_API) {
 const k1ByTicket = new Map();
 
 async function contributeEthOpen(share, open, api) {
-  if (!share?.userShareHex || !Array.isArray(open) || !open.length) return;
-  const role = Number(share.role || 0);
+  if (!Array.isArray(open) || !open.length) return;
+  const role = Number(share?.role || 0);
+  if (!share?.userShareHex) {
+    // Returning quietly here is what let a seat hold its lease while being
+    // unable to sign. Say so, so the coordinator can mark the seat.
+    if (role === 1 || role === 2) {
+      reportSeatFault(role, 'seat holder has no share that signs for the live Q');
+    }
+    return;
+  }
   const needStatus = open.some((t) => !t.paillierN || !t.paillierG);
   const st = needStatus ? await fetchEth3pStatus(api).catch(() => null) : null;
   for (const req of open) {
@@ -397,7 +495,15 @@ async function contributeEthOpen(share, open, api) {
           ciphertext: t.ciphertext,
           hashHex: t.hashHex || k1.hashHex,
           clientSecret: share,
-          publicKey: st?.seal?.publicKey || st?.publicKey,
+          // `st` is only fetched when a ticket is missing its Paillier params,
+          // so for a normal ticket it is null and this was undefined. Without a
+          // pool pubkey clientSignFinish cannot pick the recovery id and throws.
+          publicKey:
+            st?.seal?.publicKey ||
+            st?.publicKey ||
+            req.publicKey ||
+            share.publicKey ||
+            share.seal?.publicKey,
           RHex: t.RHex,
           pokR: t.pokR,
           pokC: t.pokC,
@@ -417,8 +523,13 @@ async function contributeEthOpen(share, open, api) {
           k1ByTicket.delete(id);
         }
       }
+      clearSeatFault();
     } catch (e) {
-      console.warn('[eth3p contribute]', id, e?.message || e);
+      const msg = e?.message || String(e);
+      console.warn('[eth3p contribute]', id, msg);
+      // ENC_DLOG / range / finish failures all mean this tab cannot complete the
+      // round. The coordinator sees only the absence of a message, so report it.
+      if (role === 1 || role === 2) reportSeatFault(role, `${id}: ${msg}`);
     }
   }
 }
@@ -538,19 +649,27 @@ export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
     action: 'eth3p_heartbeat',
     signerId,
     seatEpoch: share?.seatEpoch ?? 0,
+    // Reported one beat late by construction: the fault is raised while handling
+    // the previous response. That is soon enough — a stuck seat stays stuck.
+    ...(pendingSeatFault ? { seatFault: pendingSeatFault } : {}),
   });
   const role = Number(r.role || r.share?.role || share?.role || 0);
   let hexShare = share?.userShareHex ? share : liveShare;
-  if ((role === 1 || role === 2) && !ethShareMatchesLive(hexShare, r, role)) {
-    const cached = await loadHexForLiveSeat(signerId, role, r);
-    if (cached?.userShareHex) hexShare = { ...r.share, ...cached, role };
+  if (role === 1 || role === 2) {
+    if (!(await shareSignsLiveSeat(hexShare, r, role))) {
+      const cached = await loadHexForLiveSeat(signerId, role, r);
+      // No usable secret anywhere: drop the in-memory one instead of carrying it
+      // into contributeEthOpen, where it can only fail silently.
+      hexShare = cached?.userShareHex ? { ...r.share, ...cached, role } : null;
+    }
+    if (hexShare?.userShareHex) clearSeatFault();
   }
   if (r.needBirth && (role === 1 || role === 2) && !hexShare?.userShareHex) {
     hexShare = await enrollEthSigner(api);
   }
   const live = hexShare?.userShareHex ? hexShare : share;
-  if (live?.userShareHex && (r.open || []).length) {
-    await contributeEthOpen({ ...live, role, signerId }, r.open, api);
+  if ((r.open || []).length && (role === 1 || role === 2)) {
+    await contributeEthOpen({ ...(live || {}), role, signerId }, r.open, api);
   }
   try {
     await maybeBirthEthNext({ ...(live || {}), role, signerId }, api);
