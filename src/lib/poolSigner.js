@@ -16,6 +16,14 @@ const SHARE_KEY = 'wart.poolSigner.enrolledShare';
 /** In-memory only. Never write shareHex back to storage. */
 let liveShare = null;
 
+/** Carried to the next beat so a claim is always one round fresh. */
+let pendingIdentityFields = null;
+
+/** Sealed-preshare helpers, loaded on demand like the rest of the crypto here. */
+async function preshare() {
+  return import('./preshareClient.js');
+}
+
 export function defaultPoolApi() {
   return DEFAULT_POOL_API;
 }
@@ -628,6 +636,31 @@ export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
         recoverErr = e;
       }
     }
+    // Sealed pack first: holders reseal their pieces to us and we rebuild the
+    // record. The plaintext path below stays only until every pool has repacked
+    // — it is the one the coordinator can also reconstruct from.
+    try {
+      const sealedRec = await (await preshare()).recoverSeat({
+        post: (action, body) => poolPost(api, { action, ...body }),
+        prefix: 'pool3p',
+        pool: 'wart',
+        signerId,
+        role,
+        P,
+      });
+      if (sealedRec?.userShareHex) {
+        const pt = compactPointHex(await pointOfShare(sealedRec.userShareHex));
+        if (!P || pt === compactPointHex(P)) {
+          const claimed = { ...sealedRec, role, signerId, clientBorn: true, waitlist: false };
+          writeBornCache(claimed);
+          liveShare = claimed;
+          return liveShare;
+        }
+      }
+    } catch {
+      /* no sealed pack, too few holders online yet, or an old coordinator */
+    }
+
     try {
       const recovered = await tryRecoverFromPack(signerId, role, api, {
         ...r,
@@ -1008,66 +1041,44 @@ function shamirCombineLocal(shares) {
   return acc.toString(16).padStart(64, '0');
 }
 
+/**
+ * Pack a seat so it survives this tab going away.
+ *
+ * This used to post raw Shamir pieces. Every piece of every seat then sat in
+ * one file on the coordinator, at a threshold equal to the number of pieces
+ * stored — which, with the dapp share the VPS already holds, was enough to
+ * rebuild the pool key without any browser involved. Pieces are now sealed to
+ * their recipients, so the coordinator relays what it cannot open, and
+ * reconstruction needs `t` holders to actively cooperate.
+ *
+ * Targets exclude self, the other seat's holder, and any member running on the
+ * coordinator host: a piece there would restore exactly the custody this
+ * removes.
+ */
 async function packCachedSeat(share, api, role, hex) {
+  if (!hex) return null;
   const st = await fetchPool3pStatus(api).catch(() => null);
-  const live = st?.orbit?.live || [];
-  const other = Number(role) === 1 ? st?.holder2 : st?.holder1;
-  const targets = live.filter((id) => id && id !== share.signerId && id !== other);
-  if (targets.length < 2 || !hex) return null;
-  const sig = `${role}:${targets.slice().sort().join(',')}`;
-  const pack = st?.packs?.[String(role)] || st?.packs?.[role];
-  if (share[`packSig${role}`] === sig && pack?.from === share.signerId && pack?.ready) {
-    return null;
-  }
-  const shares = await shamirSplitLocal(hex, targets, 2);
   const P = await pointOfShare(hex);
-  await poolPost(api, {
-    action: 'pool3p_preshare_put',
-    signerId: share.signerId,
-    role,
-    t: 2,
-    Pnext: P,
-    delta: '0'.repeat(64),
-    shares,
-  });
-  share[`packSig${role}`] = sig;
-  return targets;
+  return (await preshare())
+    .packSeat({
+      post: (action, body) => poolPost(api, { action, ...body }),
+      prefix: 'pool3p',
+      pool: 'wart',
+      signerId: share.signerId,
+      role,
+      P,
+      record: { userShareHex: hex, role: Number(role), P, scheme: share.scheme },
+      orbit: st?.orbit?.live || [],
+      orbitKeys: st?.orbitKeys || {},
+      otherHolderId: Number(role) === 1 ? st?.holder2 : st?.holder1,
+    })
+    .catch(() => null);
 }
 
 async function packNextSeat(share, api) {
   return packCachedSeat(share, api, share.role, share.userShareHex);
 }
 
-async function shamirSplitLocal(secretHex, ids, t) {
-  const { sha256 } = await import('@noble/hashes/sha256');
-  const n = BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141');
-  const secret = BigInt('0x' + String(secretHex).replace(/^0x/i, ''));
-  const coeffs = [secret];
-  for (let i = 1; i < t; i++) {
-    const b = new Uint8Array(32);
-    crypto.getRandomValues(b);
-    let a = 0n;
-    for (const x of b) a = (a << 8n) | BigInt(x);
-    coeffs.push(a % n);
-  }
-  const xOf = (id) => {
-    const h = sha256(new TextEncoder().encode(String(id)));
-    const hex = [...h].map((x) => x.toString(16).padStart(2, '0')).join('');
-    let x = BigInt('0x' + hex) % n;
-    if (x === 0n) x = 1n;
-    return x;
-  };
-  return ids.map((id) => {
-    const x = xOf(id);
-    let y = 0n;
-    let p = 1n;
-    for (const a of coeffs) {
-      y = (y + a * p) % n;
-      p = (p * x) % n;
-    }
-    return { id, x: x.toString(), y: y.toString(16).padStart(64, '0') };
-  });
-}
 
 export async function loadActiveShare(api = DEFAULT_POOL_API) {
   await storageRemove(SHARE_KEY);
@@ -1141,8 +1152,32 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
         action: 'pool3p_heartbeat',
         signerId: share.signerId,
         seatEpoch: share.seatEpoch,
+        // Public key so other seats can seal pieces to this node, plus a signed
+        // presence claim. Ignored by a coordinator that has not deployed these.
+        ...(pendingIdentityFields || {}),
       }),
     );
+    // Refreshed after the post so the next beat carries a current claim, and so
+    // a first beat against an old server costs nothing.
+    pendingIdentityFields = await (await preshare())
+      .identityFields({
+        pool: 'wart',
+        role: share?.role ?? 0,
+        seatEpoch: share?.seatEpoch ?? 0,
+        signerId: share.signerId,
+      })
+      .catch(() => null);
+
+    // This node may hold a piece for a seat it does not occupy; a tab trying to
+    // recover is blocked until enough holders answer.
+    await (await preshare())
+      .serveResealRequests({
+        post: (action, body) => poolPost(api, { action, ...body }),
+        prefix: 'pool3p',
+        signerId: share.signerId,
+        requests: r.resealRequests,
+      })
+      .catch(() => 0);
     let next = share;
     const promoted = await maybePromoteNextQ(share, {
       ...r,
