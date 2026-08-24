@@ -17,7 +17,8 @@
     "extension:package": "node scripts/package-extension.mjs",
     "test:eth3p": "node scripts/test-eth3p-seat-recovery.mjs",
     "test:identity": "node scripts/test-node-identity.mjs",
-    "test:preshare": "node scripts/test-sealed-preshare.mjs"
+    "test:preshare": "node scripts/test-sealed-preshare.mjs",
+    "test:eth3p:churn": "node scripts/test-eth3p-churn-recovery.mjs"
   },
   "dependencies": {
     "@astrojs/netlify": "^6.5.1",

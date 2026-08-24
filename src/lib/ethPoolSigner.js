@@ -11,6 +11,14 @@ const SHARE_KEY = 'eth.poolSigner.enrolledShare';
 
 let liveShare = null;
 
+/**
+ * Sealed-preshare helpers, loaded on demand like the other crypto in this file.
+ * Keeps ECIES + Shamir out of the bundle for nodes that never hold a seat.
+ */
+async function preshare() {
+  return import('./preshareClient.js');
+}
+
 function uuid() {
   if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
   const b = new Uint8Array(16);
@@ -167,7 +175,7 @@ function compactPt(p) {
     .toLowerCase();
 }
 
-async function loadHexForLiveSeat(signerId, role, st) {
+async function loadHexForLiveSeat(signerId, role, st, api) {
   const live = await readBornCache(signerId, role);
   if (await shareSignsLiveSeat(live, st, role)) return live;
 
@@ -217,6 +225,43 @@ async function loadHexForLiveSeat(signerId, role, st) {
     await writeBornCache(recovered);
     console.warn(`[eth3p] recovered seat e${role} share from ${key}`);
     return recovered;
+  }
+
+  // Nothing in this profile signs for the live seat. Before giving up, ask the
+  // orbit: if this seat was packed, `t` holders can reseal their pieces to us
+  // and we can rebuild the record. This is the path that would have saved e1 —
+  // a seat whose only copy left with a closed tab.
+  if (api) {
+    try {
+      const liveP = compactPt(role === 1 ? st?.seal?.P1 : st?.seal?.P2);
+      const rec = await (await preshare()).recoverSeat({
+        post: (action, body) => poolPost(api, { action, ...body }),
+        prefix: 'eth3p',
+        pool: 'eth',
+        signerId,
+        role,
+        P: liveP,
+      });
+      // Trust the pack no further than the curve does: a record only counts if
+      // its secret actually derives to the live point.
+      if (rec?.userShareHex && (await pointOfShare(rec.userShareHex)) === liveP) {
+        const recovered = {
+          ...rec,
+          nextQ: false,
+          role,
+          signerId,
+          P: liveP,
+          poolAddress: st?.address || rec.poolAddress,
+          seal: st?.seal || rec.seal,
+        };
+        await writeBornCache(recovered);
+        console.warn(`[eth3p] recovered seat e${role} from orbit preshare pack`);
+        return recovered;
+      }
+    } catch {
+      // No pack, too few holders online yet, or an old coordinator. Fall
+      // through and report the fault; the next beat can try again.
+    }
   }
 
   // Deliberately not `live`. Handing a stale-Q secret to the contribute loop is
@@ -649,15 +694,33 @@ export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
     action: 'eth3p_heartbeat',
     signerId,
     seatEpoch: share?.seatEpoch ?? 0,
+    // Publishes this node's public key (so others can seal pieces to it) and a
+    // signed presence claim. Best-effort: an old coordinator ignores both.
+    ...(await (await preshare()).identityFields({
+      pool: 'eth',
+      role: share?.role ?? 0,
+      seatEpoch: share?.seatEpoch ?? 0,
+      signerId,
+    }).catch(() => ({}))),
     // Reported one beat late by construction: the fault is raised while handling
     // the previous response. That is soon enough — a stuck seat stays stuck.
     ...(pendingSeatFault ? { seatFault: pendingSeatFault } : {}),
   });
   const role = Number(r.role || r.share?.role || share?.role || 0);
+
+  // Answer reseal requests before anything else. This node may hold a piece for
+  // a seat it does not occupy, and a tab trying to recover is blocked until
+  // enough holders answer.
+  await (await preshare()).serveResealRequests({
+    post: (action, body) => poolPost(api, { action, ...body }),
+    prefix: 'eth3p',
+    signerId,
+    requests: r.resealRequests,
+  }).catch(() => 0);
   let hexShare = share?.userShareHex ? share : liveShare;
   if (role === 1 || role === 2) {
     if (!(await shareSignsLiveSeat(hexShare, r, role))) {
-      const cached = await loadHexForLiveSeat(signerId, role, r);
+      const cached = await loadHexForLiveSeat(signerId, role, r, api);
       // No usable secret anywhere: drop the in-memory one instead of carrying it
       // into contributeEthOpen, where it can only fail silently.
       hexShare = cached?.userShareHex ? { ...r.share, ...cached, role } : null;
@@ -668,6 +731,40 @@ export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
     hexShare = await enrollEthSigner(api);
   }
   const live = hexShare?.userShareHex ? hexShare : share;
+
+  // Keep the pack current while we can still sign. Packing is what makes this
+  // seat survivable if this tab goes away; doing it here means a seat is only
+  // ever unprotected for as long as it takes to birth and beat once.
+  if (live?.userShareHex && (role === 1 || role === 2)) {
+    await (await preshare()).packSeat({
+      post: (action, body) => poolPost(api, { action, ...body }),
+      prefix: 'eth3p',
+      pool: 'eth',
+      signerId,
+      role,
+      P: compactPt(role === 1 ? r?.seal?.P1 : r?.seal?.P2),
+      // Role 2 cannot rebuild Enc(d2) from the scalar alone, and nobody can
+      // finish a partial ticket without these, so the Paillier private key
+      // travels with the share.
+      record: {
+        userShareHex: live.userShareHex,
+        role,
+        scheme: live.scheme || 'eth-3p-ecdsa-lindell-v1',
+        paillierN: live.paillierN,
+        paillierG: live.paillierG,
+        paillierLambda: live.paillierLambda,
+        paillierMu: live.paillierMu,
+        P: live.P,
+        publicKey: live.publicKey || r?.seal?.publicKey,
+        Pdapp: live.Pdapp || r?.Pdapp,
+        seal: live.seal || r?.seal,
+      },
+      orbit: r?.orbit?.live || [],
+      orbitKeys: r?.orbitKeys || {},
+      otherHolderId: role === 1 ? r?.holder2 : r?.holder1,
+    }).catch(() => null);
+  }
+
   if ((r.open || []).length && (role === 1 || role === 2)) {
     await contributeEthOpen({ ...(live || {}), role, signerId }, r.open, api);
   }
