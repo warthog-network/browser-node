@@ -191,12 +191,35 @@ export async function resealPiece({ piece, toPubHex, aad, privHex }) {
  */
 export async function openPack({ pack, resealed, privHex }) {
   const shares = [];
-  for (const p of resealed || []) {
+  const seenX = new Set();
+  const take = async (sealed) => {
     try {
-      shares.push(await unsealJson(p.sealed, privHex));
+      const piece = await unsealJson(sealed, privHex);
+      const x = String(piece?.x || '');
+      if (!x || seenX.has(x)) return;
+      seenX.add(x);
+      shares.push(piece);
     } catch {
       /* not addressed to us, or tampered — ignore this piece */
     }
+  };
+
+  /**
+   * A piece already addressed to us counts.
+   *
+   * Reading only `resealed` throws away the recoverer's own piece, because a
+   * node skips its own request when it serves reseals — it never mails itself
+   * anything. That is one piece short for no reason, and it decides real cases:
+   * a t=2 pack held by exactly two nodes becomes recoverable only by some third
+   * node, and if the orbit is down to those two the seat is lost while both
+   * halves of it are sitting online. Unsealing is authenticated, so a piece not
+   * addressed to us simply fails and is skipped.
+   */
+  for (const p of pack?.pieces || []) {
+    if (p?.sealed) await take(p.sealed);
+  }
+  for (const p of resealed || []) {
+    if (p?.sealed) await take(p.sealed);
   }
   if (shares.length < Number(pack?.t || 2)) return null;
 

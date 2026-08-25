@@ -122,6 +122,31 @@ const lateReseal = [
 const recovered2 = await openPack({ pack, resealed: lateReseal, privHex: requester.privHex });
 check('any t of n works (survives churn)', JSON.stringify(recovered2) === JSON.stringify(record));
 
+// --- a recoverer that already holds a piece uses it ------------------------
+// A node never answers its own reseal request, so its own piece never arrives
+// in `resealed`. Reading only that list threw the piece away and left the node
+// one short: with a t=2 pack held by exactly two members, neither of them could
+// rebuild the seat and it took some third node to do it — which is how e1 came
+// to be unrecoverable by two of the three browsers that were holding it.
+const insider = m[0];
+const toInsider = [
+  await resealPiece({ piece: pack.pieces[1], toPubHex: insider.pubHex, aad: AAD, privHex: m[1].privHex }),
+];
+check(
+  'a holder recovering the seat counts its own piece',
+  JSON.stringify(await openPack({ pack, resealed: toInsider, privHex: insider.privHex })) ===
+    JSON.stringify(record),
+  'one reseal plus the piece already addressed to it reaches t=2',
+);
+check(
+  'but its own piece alone is still not enough',
+  (await openPack({ pack, resealed: [], privHex: insider.privHex })) === null,
+);
+check(
+  'and an outsider still needs t reseals',
+  (await openPack({ pack, resealed: [], privHex: requester.privHex })) === null,
+);
+
 // --- a pack is bound to its seat and Q ------------------------------------
 const wrongSeat = { ...pack, aad: packAad({ pool: 'eth', role: 1, P: '03c3faff' }) };
 check(

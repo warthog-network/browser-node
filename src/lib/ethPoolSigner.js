@@ -255,6 +255,28 @@ async function loadHexForLiveSeat(signerId, role, st, api) {
           seal: st?.seal || rec.seal,
         };
         await writeBornCache(recovered);
+        /**
+         * Tell the coordinator who holds this seat now.
+         *
+         * `seats[r].signerId` still names the tab that birthed it, and that name
+         * is what gates the lease — so without this the seat has to be adopted
+         * again, and recovered again, every time the lease lapses. A Schnorr
+         * proof of dlog(P) is the honest basis for rewriting it: this tab can
+         * demonstrate what the birth record only asserts. Best-effort, because
+         * an older coordinator has no such endpoint and the seat signs either
+         * way once the secret is back.
+         */
+        try {
+          const { schnorrProveDlog, seatPokContext } = await import('./pool3pClient.js');
+          await poolPost(api, {
+            action: 'eth3p_claim_born',
+            signerId,
+            role,
+            pok: schnorrProveDlog(rec.userShareHex, seatPokContext('claim', role, liveP)),
+          });
+        } catch {
+          /* old coordinator, or someone live still holds the lease */
+        }
         console.warn(`[eth3p] recovered seat e${role} from orbit preshare pack`);
         return recovered;
       }
