@@ -314,6 +314,66 @@ async function pointOfShare(hex) {
  */
 let pendingSeatFault = null;
 
+/**
+ * Last seat claim this tab got the coordinator to accept, as role:P:signerId.
+ *
+ * claimBornEthSeat is what sets claimedBorn, and claimedBorn is the only thing
+ * that clears `recovering` on the lease. Claiming used to happen in exactly one
+ * place — the orbit-pack recovery branch — which a tab only enters when it has
+ * no usable share. So the first recovery claimed the seat, and every later
+ * re-acquisition took the cached-share path, never claimed, and left the lease
+ * sitting at recovering:true until releaseStaleRecovering handed it to the next
+ * candidate. Seat 2 churned between three tabs on a ~30s cycle that way, none
+ * of them ever becoming proven.
+ *
+ * Re-claiming is idempotent, so the rule is simply: whenever we hold a seat we
+ * can sign for, make sure the coordinator has heard it from us.
+ */
+let lastSeatClaim = { key: '', at: 0 };
+const SEAT_CLAIM_REFRESH_MS = 60000;
+
+/**
+ * Tell the coordinator this tab holds the seat, if it has not heard so lately.
+ *
+ * Best-effort in the same sense as the recovery-path claim: an older
+ * coordinator has no such endpoint, and a claim can be legitimately denied
+ * while a proven holder is live. Either way the seat still signs — this only
+ * decides whether the lease reads as recovering or proven.
+ */
+async function ensureSeatClaimed({ role, signerId, share, status, api }) {
+  const r = Number(role);
+  if (r !== 1 && r !== 2) return;
+  const holder = r === 1 ? status?.holder1 : status?.holder2;
+  const liveP = compactPt(r === 1 ? status?.seal?.P1 : status?.seal?.P2);
+  if (!liveP || !share?.userShareHex) return;
+  if (holder && holder !== signerId) {
+    // Someone else has it. Forget our claim so re-acquiring re-claims rather
+    // than trusting a receipt from a tenure that has already ended.
+    lastSeatClaim = { key: '', at: 0 };
+    return;
+  }
+  // Throttle before deriving the point: shareSignsLiveSeat costs a scalar
+  // multiply, and on a settled seat this runs on every beat to do nothing.
+  const key = `${r}:${liveP}:${signerId}`;
+  if (lastSeatClaim.key === key && Date.now() - lastSeatClaim.at < SEAT_CLAIM_REFRESH_MS) return;
+  if (!(await shareSignsLiveSeat(share, status, r))) return;
+  try {
+    const { schnorrProveDlog, seatPokContext } = await import('./pool3pClient.js');
+    await poolPost(api, {
+      action: 'eth3p_claim_born',
+      signerId,
+      role: r,
+      pok: schnorrProveDlog(share.userShareHex, seatPokContext('claim', r, liveP)),
+    });
+    lastSeatClaim = { key, at: Date.now() };
+  } catch (e) {
+    // Denied while a proven holder is live, or an old coordinator. Leave the
+    // receipt cleared so the next beat tries again.
+    lastSeatClaim = { key: '', at: 0 };
+    console.warn('[eth3p claim_born]', e?.message || String(e));
+  }
+}
+
 function reportSeatFault(role, reason) {
   pendingSeatFault = {
     role: Number(role) || 0,
@@ -539,6 +599,26 @@ async function contributeEthOpen(share, open, api) {
         const ticketHash = String(t.hashHex || '').replace(/^0x/i, '').toLowerCase();
         const k1Hash = String(k1?.hashHex || '').replace(/^0x/i, '').toLowerCase();
         if (k1 && ticketHash && k1Hash && k1Hash !== ticketHash) {
+          k1ByTicket.delete(id);
+          k1 = null;
+        }
+        /**
+         * The round on the coordinator may not be the round we started.
+         *
+         * The seat-1 lease can move between beats, and eth3pOfferR1 stamps
+         * whichever holder posts into t.R1Hex. A tab that cached k1 before the
+         * handover then verifies a pokR proving R = k2·R1 for *someone else's*
+         * R1 and throws LINDELL_R_POK on every beat forever: the hash check
+         * above cannot see it, because a sweep's hashHex never changes, and
+         * `t.haveR1` stays true so the re-post branch below is skipped.
+         *
+         * Matching on R1 is what actually answers "is this my round". Dropping
+         * the nonce costs one beat — the next pass posts a fresh R1 and the
+         * coordinator re-runs Lindell off the d2 it already has.
+         */
+        const ticketR1 = String(t.R1Hex || '').replace(/^0x/i, '').toLowerCase();
+        const myR1 = String(k1?.R1Hex || '').replace(/^0x/i, '').toLowerCase();
+        if (k1 && ticketR1 && myR1 && myR1 !== ticketR1) {
           k1ByTicket.delete(id);
           k1 = null;
         }
@@ -785,6 +865,13 @@ export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
       orbitKeys: r?.orbitKeys || {},
       otherHolderId: role === 1 ? r?.holder2 : r?.holder1,
     }).catch(() => null);
+  }
+
+  // Before contributing: a seat whose lease still reads as recovering gets
+  // recycled out from under us mid-round, which is how a ticket ends up with an
+  // R1 from one tab and no way for the next one to finish it.
+  if (role === 1 || role === 2) {
+    await ensureSeatClaimed({ role, signerId, share: live, status: r, api });
   }
 
   if ((r.open || []).length && (role === 1 || role === 2)) {
