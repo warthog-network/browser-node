@@ -15,6 +15,7 @@ import {
   DEFAULT_POOL_API,
 } from '../lib/poolSigner.js';
 import { formatVerifyLine } from '../lib/poolVerify.js';
+import TestnetBridgeBadge, { TestnetBridgeScope } from './TestnetBridgeBadge.jsx';
 
 const POLL_IDLE_MS = 2000;
 const POLL_HOT_MS = 800;
@@ -445,6 +446,13 @@ export default function PoolThresholdSigner() {
                   : 'In the room'
                 : 'Listening';
 
+  const title = (
+    <div className="pool-signer__title">
+      <h2>3P pool signer</h2>
+      <TestnetBridgeBadge />
+    </div>
+  );
+
   const controls = (
     <div className="pool-signer__controls">
       <button
@@ -476,7 +484,7 @@ export default function PoolThresholdSigner() {
     return (
       <section className="panel pool-signer pool-signer--collapsed" aria-label="3P pool signer">
         <div className="panel__head">
-          <h2>3P pool signer</h2>
+          {title}
           {controls}
         </div>
         <div
@@ -498,9 +506,10 @@ export default function PoolThresholdSigner() {
   return (
     <section className="panel pool-signer" aria-label="3P pool signer">
       <div className="panel__head">
-        <h2>3P pool signer</h2>
+        {title}
         {controls}
       </div>
+      <TestnetBridgeScope />
 
       <div
         className={`pool-signer__status is-${

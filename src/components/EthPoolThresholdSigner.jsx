@@ -10,6 +10,7 @@ import {
   writeEnabled,
   writePanelOpen,
 } from '../lib/ethPoolSigner.js';
+import TestnetBridgeBadge, { TestnetBridgeScope } from './TestnetBridgeBadge.jsx';
 
 const TRANSIENT =
   /Failed to fetch|fetch failed|NetworkError|Load failed|aborted|AbortError|502|503|504|network|ECONNRESET/i;
@@ -253,11 +254,15 @@ export default function EthPoolThresholdSigner() {
   );
 
   return (
-    <section className={`panel pool-signer${panelOpen ? '' : ' pool-signer--collapsed'}`} aria-label="ETH 3P signer">
+    <section className={`panel pool-signer pool-signer--eth${panelOpen ? '' : ' pool-signer--collapsed'}`} aria-label="ETH 3P signer">
       <div className="panel__head">
-        <h2>ETH 3P signer (e1 / e2)</h2>
+        <div className="pool-signer__title">
+          <h2>ETH 3P signer</h2>
+          <TestnetBridgeBadge />
+        </div>
         {controls}
       </div>
+      {panelOpen ? <TestnetBridgeScope /> : null}
       <div className={`pool-signer__status is-${statusClass}`}>
         <span className="pool-signer__dot" aria-hidden />
         <strong>{phase}</strong>

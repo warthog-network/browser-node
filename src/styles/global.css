@@ -1,41 +1,92 @@
 /* Warthog brand kit (WT Guidelines V01.A)
  * Primary yellow #FDB913 (Pantone 1375 C)
  * Logo tokens: st0 #F8F8F9 · st1 #FDB913 · st2 #231F20 · st3 #FFFFFF
- * Light UI bg reference: #E9E9E9 · Font: Montserrat
+ * Font: Montserrat
+ *
+ * Theme: "refined dark console". Yellow is reserved for the primary action and
+ * live values — status uses its own semantic ramp so nothing competes with it.
+ * Token names mirror scripts/extension-theme.css; keep the two in sync.
  */
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
 
 :root {
   /* Brand core */
   --brand-yellow: #fdb913;
-  --brand-yellow-hover: #e79300;
+  --brand-yellow-hover: #ffc93a;
   --brand-yellow-dim: #c48f0e;
   --brand-black: #231f20;
   --brand-offwhite: #f8f8f9;
   --brand-white: #ffffff;
   --brand-gray: #e9e9e9;
 
-  /* App surface (dark theme built on brand black) */
-  --bg: #141112;
-  --bg-elevated: #1c191a;
-  --bg-panel: #221e1f;
-  --border: #3a3435;
-  --text: var(--brand-offwhite);
-  --muted: #9a9192;
+  /* Elevation ladder — warm near-black derived from brand black */
+  --ground: #0d0b0c;
+  --surface-1: #151213;
+  --surface-2: #1c1819;
+  --surface-3: #262021;
+  --surface-4: #302829;
 
-  /* Accents */
+  /* Hairlines */
+  --line: #2a2425;
+  --line-strong: #3a3334;
+
+  /* Text ramp */
+  --text: #f4f2f2;
+  --text-2: #b7aeaf;
+  --text-3: #857c7d;
+
+  /* Legacy aliases — existing rules and the extension build depend on these */
+  --bg: var(--ground);
+  --bg-elevated: var(--surface-2);
+  --bg-panel: var(--surface-1);
+  --border: var(--line);
+  --muted: var(--text-3);
+
+  /* Accent (primary action + live values only) */
   --accent: var(--brand-yellow);
   --accent-dim: var(--brand-yellow-dim);
-  --accent-soft: rgba(253, 185, 19, 0.12);
-  --accent-glow: rgba(253, 185, 19, 0.28);
-  --danger: #ff7b7b;
-  --warn: #ffd27a;
-  --ok: var(--brand-yellow);
+  --accent-soft: rgba(253, 185, 19, 0.1);
+  --accent-glow: rgba(253, 185, 19, 0.26);
 
-  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  /* Semantic status — deliberately not yellow */
+  --ok: #4bd394;
+  --ok-soft: rgba(75, 211, 148, 0.12);
+  --ok-line: rgba(75, 211, 148, 0.38);
+  --warn: #ffc861;
+  --warn-soft: rgba(255, 200, 97, 0.1);
+  --warn-line: rgba(255, 200, 97, 0.36);
+  --danger: #ff7b7b;
+  --danger-soft: rgba(255, 123, 123, 0.09);
+  --danger-line: rgba(255, 123, 123, 0.4);
+
+  /* Signer identities */
+  --wart: #4ecdc4;
+  --wart-soft: rgba(78, 205, 196, 0.09);
+  --wart-line: rgba(78, 205, 196, 0.32);
+  --eth: #9aa8ff;
+  --eth-soft: rgba(154, 168, 255, 0.09);
+  --eth-line: rgba(154, 168, 255, 0.32);
+
+  /* Type */
+  --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
   --sans: 'Montserrat', 'Segoe UI', system-ui, -apple-system, sans-serif;
-  --radius: 10px;
-  --shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+
+  /* Shape */
+  --r-xs: 6px;
+  --r-sm: 9px;
+  --r: 13px;
+  --r-lg: 18px;
+  --r-full: 999px;
+  --radius: var(--r); /* legacy alias */
+
+  /* Depth */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 8px 26px -12px rgba(0, 0, 0, 0.7);
+  --shadow-lg: 0 2px 6px rgba(0, 0, 0, 0.4), 0 22px 50px -24px rgba(0, 0, 0, 0.85);
+
+  /* Motion */
+  --ease: cubic-bezier(0.22, 0.65, 0.28, 1);
+  --dur: 160ms;
 }
 
 *,
@@ -51,12 +102,26 @@ body {
   min-height: 100%;
   max-width: 100%;
   overflow-x: hidden;
-  background:
-    radial-gradient(1100px 520px at 8% -12%, rgba(253, 185, 19, 0.14) 0%, transparent 55%),
-    radial-gradient(800px 420px at 100% 0%, rgba(253, 185, 19, 0.06) 0%, transparent 48%),
-    var(--bg);
+  background: var(--ground);
   color: var(--text);
   font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Ambient field — fixed so it does not scroll away or stretch the document. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(1200px 560px at 12% -14%, rgba(253, 185, 19, 0.11) 0%, transparent 58%),
+    radial-gradient(900px 460px at 96% -6%, rgba(154, 168, 255, 0.05) 0%, transparent 52%),
+    radial-gradient(700px 700px at 50% 118%, rgba(78, 205, 196, 0.035) 0%, transparent 60%);
 }
 
 button,
@@ -64,12 +129,73 @@ input,
 select,
 textarea {
   font: inherit;
+  color: inherit;
 }
 
 a {
   color: var(--accent);
+  text-underline-offset: 0.18em;
+  text-decoration-thickness: 1px;
+}
+
+a:hover {
+  color: var(--brand-yellow-hover);
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+}
+
+/* One consistent focus ring everywhere. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+::selection {
+  background: var(--accent-glow);
+  color: var(--brand-white);
+}
+
+/* Scrollbars that read as part of the console, not the OS. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-4) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--surface-4);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--r-full);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--line-strong);
+  background-clip: content-box;
 }
 
 #root-app {
   min-height: 100vh;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }

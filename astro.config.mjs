@@ -29,6 +29,13 @@ export default defineConfig({
     define: {
       global: 'globalThis',
     },
+    // Reached only through the lazy import('./preshareClient.js') in
+    // poolSigner/ethPoolSigner, so Vite's startup scan never sees them and
+    // optimizes them mid-session — which invalidates the module graph and
+    // fails that dynamic import. Pre-bundle them at boot instead.
+    optimizeDeps: {
+      include: ['@noble/curves/secp256k1', '@noble/hashes/sha256'],
+    },
     server: {
       headers: {
         'Cross-Origin-Opener-Policy': 'same-origin',

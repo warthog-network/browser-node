@@ -51,6 +51,12 @@ import PoolThresholdSigner from './PoolThresholdSigner.jsx';
 import EthPoolThresholdSigner from './EthPoolThresholdSigner.jsx';
 import './NodeDashboard.css';
 
+const CONSOLE_TABS = [
+  { key: 'log', label: 'Activity log' },
+  { key: 'advanced', label: 'Advanced' },
+  { key: 'ext', label: 'Extension' },
+];
+
 const MAX_LOG = 400;
 const MAX_ROWS = 50;
 /** Rolling window for blocks/s estimate. */
@@ -94,6 +100,10 @@ export default function WasmBrowserNode() {
   const [localDbInfo, setLocalDbInfo] = useState(null);
   /** Manifest for same-origin / public community snapshot (optional). */
   const [publicSnapshot, setPublicSnapshot] = useState(null);
+  // Activity log is a drawer now: closed while idle, opened once the node starts.
+  const [logOpen, setLogOpen] = useState(false);
+  /** Which console pane is showing. Panes stay mounted so the log keeps its scroll. */
+  const [consoleTab, setConsoleTab] = useState('log');
   const snapshotFileRef = useRef(null);
 
   const startedRef = useRef(false);
@@ -102,6 +112,7 @@ export default function WasmBrowserNode() {
   /** Sync flag for WASM OOM during printErr (state updates are async). */
   const memoryFatalRef = useRef(false);
   const consoleRef = useRef(null);
+  const logAutoOpenedRef = useRef(false);
   /** Height samples: { t, h }[] for rate estimation. */
   const heightSamplesRef = useRef([]);
   /** Latest network tip from HTTP probe (for ETA). */
@@ -308,7 +319,15 @@ export default function WasmBrowserNode() {
         }
       });
     }
-  }, [logLines]);
+  }, [logLines, logOpen, consoleTab]);
+
+  // Open the log the first time the node starts; after that the user's toggle wins.
+  useEffect(() => {
+    if ((starting || running) && !logAutoOpenedRef.current) {
+      logAutoOpenedRef.current = true;
+      setLogOpen(true);
+    }
+  }, [starting, running]);
 
   // Warn when the tab is backgrounded — Chromium throttles workers hard.
   useEffect(() => {
@@ -946,6 +965,25 @@ export default function WasmBrowserNode() {
     return `~${h}h ${m}m`;
   };
 
+  /** Local height as a share of network height — drives the sync meter. */
+  const syncPercent = useMemo(() => {
+    const local = Number(chain?.height);
+    const net = Number(bridgeHttp?.height);
+    if (!Number.isFinite(local) || !Number.isFinite(net) || net <= 0) return null;
+    return Math.max(0, Math.min(100, (local / net) * 100));
+  }, [chain, bridgeHttp]);
+
+  // Lifecycle phase — distinct from the header badge, which reports browser readiness.
+  const heroEyebrow = storageFatal || memoryFatal
+    ? 'Needs attention'
+    : starting
+      ? 'Starting up'
+      : stopping
+        ? 'Shutting down'
+        : nodeHealthy
+          ? 'Node online'
+          : 'Node idle';
+
   const syncRateLabel = syncStats?.blocksPerSec != null
     ? `${syncStats.blocksPerSec < 10
       ? syncStats.blocksPerSec.toFixed(1)
@@ -1026,10 +1064,12 @@ export default function WasmBrowserNode() {
         </>
       )}
 
-      <PoolThresholdSigner />
-      <EthPoolThresholdSigner />
-
-      <section className="panel hero">
+      <section
+        className="panel hero"
+        style={{ '--sync': syncPercent ?? 0 }}
+        data-sync={syncPercent != null ? 'on' : 'off'}
+      >
+        <span className="hero__eyebrow">{heroEyebrow}</span>
         <p className="hero__status">{friendlyStatus}</p>
         <div className="hero__actions">
           <button
@@ -1139,80 +1179,51 @@ export default function WasmBrowserNode() {
             </div>
           </div>
         )}
-      </section>
-
-      {!inExtPage && (
-        <section className="panel ext-download" aria-label="Chromium extension download">
-          <div className="panel__head">
-            <h2>Chromium extension</h2>
-          </div>
-          <p className="ext-download__lead">
-            Same full WASM node as this page, as a Chrome / Brave / Edge extension.
-            Side panel stays open while you browse (more reliable isolation on Brave).
-          </p>
-          <div className="ext-download__actions">
-            <a
-              className="btn btn--ghost"
-              href="/downloads/warthog_node_extension.zip"
-              download="warthog_node_extension.zip"
-            >
-              Download extension (.zip)
-            </a>
-          </div>
-          <ol className="ext-download__steps">
-            <li>Unzip the archive (one folder: <code>warthog_node_extension</code>).</li>
-            <li>Open <code>chrome://extensions</code> (or <code>brave://extensions</code>).</li>
-            <li>Enable <strong>Developer mode</strong> → <strong>Load unpacked</strong>.</li>
-            <li>Select the unzipped folder that contains <code>manifest.json</code>.</li>
-            <li>Click the toolbar icon → side panel → <strong>Start node</strong>.</li>
-          </ol>
-        </section>
-      )}
-
-      <div className="snapshot" aria-label="Network snapshot">
-        <div className="snapshot__card">
-          <span className="snapshot__label">Block height</span>
-          <span className="snapshot__value">
-            {chain?.height != null ? `#${chain.height}` : '—'}
-          </span>
-          {bridgeHttp?.height != null && (
-            <span className="snapshot__sub">
-              network #{bridgeHttp.height}
-              {syncStats?.lag != null ? ` · lag ${syncStats.lag.toLocaleString()}` : ''}
+        <div className="snapshot" aria-label="Network snapshot">
+          <div className={`snapshot__card${chain?.height != null ? ' is-live' : ''}`}>
+            <span className="snapshot__label">Block height</span>
+            <span className="snapshot__value">
+              {chain?.height != null ? Number(chain.height).toLocaleString() : '—'}
             </span>
-          )}
-          {chain?.difficulty != null && !bridgeHttp?.height && (
-            <span className="snapshot__sub">{formatHashrate(chain.difficulty)}</span>
-          )}
-        </div>
-        <div className="snapshot__card">
-          <span className="snapshot__label">Sync rate</span>
-          <span className="snapshot__value">
-            {nodeHealthy && syncRateLabel ? syncRateLabel : '—'}
-          </span>
-          <span className="snapshot__sub">
-            {nodeHealthy && syncStats?.etaSec != null
-              ? `ETA ${formatEta(syncStats.etaSec)}`
-              : nodeHealthy
-                ? 'measuring…'
+            {bridgeHttp?.height != null && (
+              <span className="snapshot__sub">
+                network {Number(bridgeHttp.height).toLocaleString()}
+                {syncStats?.lag != null ? ` · lag ${syncStats.lag.toLocaleString()}` : ''}
+              </span>
+            )}
+            {chain?.difficulty != null && !bridgeHttp?.height && (
+              <span className="snapshot__sub">{formatHashrate(chain.difficulty)}</span>
+            )}
+          </div>
+          <div className={`snapshot__card${nodeHealthy && syncRateLabel ? ' is-live' : ''}`}>
+            <span className="snapshot__label">Sync rate</span>
+            <span className="snapshot__value">
+              {nodeHealthy && syncRateLabel ? syncRateLabel : '—'}
+            </span>
+            <span className="snapshot__sub">
+              {nodeHealthy && syncStats?.etaSec != null
+                ? `ETA ${formatEta(syncStats.etaSec)}`
+                : nodeHealthy
+                  ? 'measuring…'
+                  : 'after start'}
+            </span>
+          </div>
+          <div className={`snapshot__card${displayPeerCount > 0 ? ' is-live' : ''}`}>
+            <span className="snapshot__label">Connections</span>
+            <span className="snapshot__value">{nodeHealthy || peers.length ? displayPeerCount : '—'}</span>
+            <span className="snapshot__sub">
+              {nodeHealthy
+                ? `${displayPeerCount === 1 ? 'peer' : 'peers'} · ${configuredPeerCount} WS URL${configuredPeerCount === 1 ? '' : 's'}`
                 : 'after start'}
-          </span>
+            </span>
+          </div>
+          <div className={`snapshot__card${displayMempoolCount > 0 ? ' is-live' : ''}`}>
+            <span className="snapshot__label">Pending txs</span>
+            <span className="snapshot__value">{nodeHealthy || mempool.length ? displayMempoolCount : '—'}</span>
+            <span className="snapshot__sub">mempool</span>
+          </div>
         </div>
-        <div className="snapshot__card">
-          <span className="snapshot__label">Connections</span>
-          <span className="snapshot__value">{nodeHealthy || peers.length ? displayPeerCount : '—'}</span>
-          <span className="snapshot__sub">
-            {nodeHealthy
-              ? `${displayPeerCount === 1 ? 'peer' : 'peers'} · ${configuredPeerCount} WS URL${configuredPeerCount === 1 ? '' : 's'}`
-              : 'after start'}
-          </span>
-        </div>
-        <div className="snapshot__card">
-          <span className="snapshot__label">Pending txs</span>
-          <span className="snapshot__value">{nodeHealthy || mempool.length ? displayMempoolCount : '—'}</span>
-          <span className="snapshot__sub">mempool</span>
-        </div>
-      </div>
+      </section>
 
       {(!isolated || !sab) && (
         <div className="dash__error">
@@ -1226,89 +1237,122 @@ export default function WasmBrowserNode() {
         </div>
       )}
 
-      <div className="lists-row">
-        <section className="panel">
-          <div className="panel__head">
-            <h2>Connections</h2>
-            <span className="panel__count">{displayPeerCount}</span>
-          </div>
-          <div className="list">
-            {peers.length === 0 ? (
-              <p className="list__empty">
-                {nodeHealthy ? 'Waiting for peers…' : 'Start the node to connect'}
-              </p>
-            ) : (
-              peers.map((p) => {
-                const inbound = p.inbound === true || p.inbound === 'true' || p.inbound === 1 || p.inbound === '1';
-                const addr = String(p.address ?? '—');
-                return (
-                  <div className="list-item" key={String(p.id)}>
-                    <div className="list-item__row">
-                      <span className="list-item__main">
-                        {String(p.type || 'peer')}
-                      </span>
-                      <span className={`tag ${inbound ? 'tag--in' : 'tag--out'}`}>
-                        {inbound ? 'in' : 'out'}
-                      </span>
-                    </div>
-                    <div className="list-item__addr" title={addr}>
-                      {shortAddr(addr, 10)}
-                    </div>
-                    {p.since != null && p.since !== '' && (
-                      <div className="list-item__amounts">
-                        <span className="muted">since {String(p.since)}</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="panel__head">
-            <h2>Pending transactions</h2>
-            <span className="panel__count">{displayMempoolCount}</span>
-          </div>
-          <div className="list">
-            {mempool.length === 0 ? (
-              <p className="list__empty">
-                {nodeHealthy ? 'No pending transactions' : 'Empty until the node is running'}
-              </p>
-            ) : (
-              mempool.map((tx) => (
-                <div className="list-item" key={String(tx.id ?? tx.txHash)}>
-                  <div className="list-item__row">
-                    <span className="list-item__main" title={String(tx.fromAddress || '')}>
-                      {shortAddr(tx.fromAddress, 5)}
-                      {' → '}
-                      {shortAddr(tx.toAddress, 5)}
-                    </span>
-                  </div>
-                  <div className="list-item__amounts">
-                    <span>
-                      <span className="muted">amount </span>
-                      {tx.amount ?? '—'}
-                    </span>
-                    <span>
-                      <span className="muted">fee </span>
-                      {tx.fee ?? '—'}
-                    </span>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
+      <div className="signers-row">
+        <PoolThresholdSigner />
+        <EthPoolThresholdSigner />
       </div>
 
-      <details className="advanced">
+      <section className="panel network" aria-label="Live network">
+        <div className="panel__head">
+          <h2>Network</h2>
+          <span className="panel__count">
+            {displayPeerCount} peer{displayPeerCount === 1 ? '' : 's'}
+            {' · '}
+            {displayMempoolCount} pending
+          </span>
+        </div>
+        <div className="network__split">
+          <div className="network__col">
+            <h3 className="network__k">Connections</h3>
+            <div className="list">
+              {peers.length === 0 ? (
+                <p className="list__empty">
+                  {nodeHealthy ? 'Waiting for peers…' : 'Start the node to connect'}
+                </p>
+              ) : (
+                peers.map((p) => {
+                  const inbound = p.inbound === true || p.inbound === 'true' || p.inbound === 1 || p.inbound === '1';
+                  const addr = String(p.address ?? '—');
+                  return (
+                    <div className="list-item" key={String(p.id)}>
+                      <div className="list-item__row">
+                        <span className="list-item__main">
+                          {String(p.type || 'peer')}
+                        </span>
+                        <span className={`tag ${inbound ? 'tag--in' : 'tag--out'}`}>
+                          {inbound ? 'in' : 'out'}
+                        </span>
+                      </div>
+                      <div className="list-item__addr" title={addr}>
+                        {shortAddr(addr, 10)}
+                      </div>
+                      {p.since != null && p.since !== '' && (
+                        <div className="list-item__amounts">
+                          <span className="muted">since {String(p.since)}</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+          <div className="network__col">
+            <h3 className="network__k">Pending transactions</h3>
+            <div className="list">
+              {mempool.length === 0 ? (
+                <p className="list__empty">
+                  {nodeHealthy ? 'No pending transactions' : 'Empty until the node is running'}
+                </p>
+              ) : (
+                mempool.map((tx) => (
+                  <div className="list-item" key={String(tx.id ?? tx.txHash)}>
+                    <div className="list-item__row">
+                      <span className="list-item__main" title={String(tx.fromAddress || '')}>
+                        {shortAddr(tx.fromAddress, 5)}
+                        {' → '}
+                        {shortAddr(tx.toAddress, 5)}
+                      </span>
+                    </div>
+                    <div className="list-item__amounts">
+                      <span>
+                        <span className="muted">amount </span>
+                        {tx.amount ?? '—'}
+                      </span>
+                      <span>
+                        <span className="muted">fee </span>
+                        {tx.fee ?? '—'}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <details
+        className="advanced console-card"
+        open={logOpen}
+        onToggle={(e) => setLogOpen(e.currentTarget.open)}
+      >
         <summary>
-          Advanced
-          <span className="advanced__hint">Network settings, diagnostics &amp; logs</span>
+          Console
+          <span className="advanced__hint">
+            Activity log, diagnostics and network settings
+          </span>
+          <span className="advanced__tail" title={status}>
+            {status}
+          </span>
         </summary>
         <div className="advanced__body">
+          <div className="tabs" role="tablist" aria-label="Console sections">
+            {CONSOLE_TABS.filter((t) => t.key !== 'ext' || !inExtPage).map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                role="tab"
+                aria-selected={consoleTab === t.key}
+                className={`tab${consoleTab === t.key ? ' is-on' : ''}`}
+                onClick={() => setConsoleTab(t.key)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          <div className={`pane${consoleTab === 'advanced' ? ' is-on' : ''}`} role="tabpanel">
           <div className="advanced__section">
             <h3>Browser readiness</h3>
             <div className="checks-grid">
@@ -1570,25 +1614,46 @@ export default function WasmBrowserNode() {
               </li>
             </ol>
           </details>
+          </div>
+
+          <div className={`pane${consoleTab === 'log' ? ' is-on' : ''}`} role="tabpanel">
+            <textarea
+              ref={consoleRef}
+              className="console"
+              readOnly
+              value={logLines.join('\n')}
+              spellCheck={false}
+              aria-label="Node console log"
+            />
+          </div>
+
+          <div
+            className={`pane ext-download${consoleTab === 'ext' && !inExtPage ? ' is-on' : ''}`}
+            role="tabpanel"
+          >
+          <p className="ext-download__lead">
+            Same full WASM node as this page, as a Chrome / Brave / Edge extension.
+            Side panel stays open while you browse (more reliable isolation on Brave).
+          </p>
+          <div className="ext-download__actions">
+            <a
+              className="btn btn--ghost"
+              href="/downloads/warthog_node_extension.zip"
+              download="warthog_node_extension.zip"
+            >
+              Download extension (.zip)
+            </a>
+          </div>
+          <ol className="ext-download__steps">
+            <li>Unzip the archive (one folder: <code>warthog_node_extension</code>).</li>
+            <li>Open <code>chrome://extensions</code> (or <code>brave://extensions</code>).</li>
+            <li>Enable <strong>Developer mode</strong> → <strong>Load unpacked</strong>.</li>
+            <li>Select the unzipped folder that contains <code>manifest.json</code>.</li>
+            <li>Click the toolbar icon → side panel → <strong>Start node</strong>.</li>
+          </ol>
+          </div>
         </div>
       </details>
-
-      <section className="panel">
-        <div className="panel__head">
-          <h2>Activity log</h2>
-          <span className="panel__count muted small" title={status}>
-            {status}
-          </span>
-        </div>
-        <textarea
-          ref={consoleRef}
-          className="console"
-          readOnly
-          value={logLines.join('\n')}
-          spellCheck={false}
-          aria-label="Node console log"
-        />
-      </section>
 
       <footer className="dash__footer">
         <p>
