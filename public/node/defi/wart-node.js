@@ -374,8 +374,11 @@ initWorkerLogging();
 // Support for growable heap + pthreads, where the buffer may change, so JS views
 // must be updated.
 function growMemViews() {
-  // `updateMemoryViews` updates all the views simultaneously, so it's enough to check any of them.
-  if (wasmMemory.buffer != HEAP8.buffer) {
+  // HEAP8 is unset until the pthread "load" message installs wasmMemory.
+  // Chrome/Brave stable can run growMemViews in that window; .buffer on
+  // undefined becomes an unhandledrejection (glue line ~401).
+  if (!wasmMemory) return;
+  if (!HEAP8 || wasmMemory.buffer != HEAP8.buffer) {
     updateMemoryViews();
   }
 }
@@ -444,10 +447,20 @@ if (ENVIRONMENT_IS_PTHREAD) {
           }
         }
         wasmMemory = msgData.wasmMemory;
-        updateMemoryViews();
         wasmModule = msgData.wasmModule;
-        createWasm();
-        run();
+        if (!wasmMemory) {
+          throw new Error("pthread load: wasmMemory missing from main thread");
+        }
+        updateMemoryViews();
+        // createWasm is async; a throw becomes an unhandled rejection (line 401)
+        // if we do not chain. Do not call run() until the instance exists.
+        Promise.resolve(createWasm()).then(() => {
+          run();
+        }).catch((ex) => {
+          err(`worker: createWasm failed: ${ex}`);
+          if (ex?.stack) err(ex.stack);
+          throw ex;
+        });
       } else if (cmd === "run") {
         assert(msgData.pthread_ptr);
         // Call inside JS module to set up the stack frame for this pthread in JS module scope.
@@ -500,6 +513,9 @@ if (ENVIRONMENT_IS_PTHREAD) {
 var runtimeInitialized = false;
 
 function updateMemoryViews() {
+  if (!wasmMemory) {
+    abort("updateMemoryViews: wasmMemory is not set (pthread load race)");
+  }
   var b = wasmMemory.buffer;
   Module["HEAP8"] = HEAP8 = new Int8Array(b);
   Module["HEAP16"] = HEAP16 = new Int16Array(b);

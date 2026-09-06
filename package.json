@@ -10,6 +10,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro",
+    "patch:defi-glue": "node scripts/patch-defi-glue.mjs",
+    "test:defi-glue": "node scripts/test-defi-glue-patch.mjs",
     "test:handshake": "node scripts/test-grunt-handshake.mjs",
     "test:handshake:wait": "node scripts/test-grunt-handshake.mjs --wait",
     "snapshot:link": "node scripts/link-public-snapshot.mjs",

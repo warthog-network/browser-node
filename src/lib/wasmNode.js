@@ -30,6 +30,7 @@ import {
   peersLookCrossNetwork,
   peersStorageKey,
 } from './nodeNetworks.js';
+import { patchEmscriptenPthreadGlue } from './emscriptenPthreadGlue.js';
 
 /** Default P2P bridge (public Official1). Prefer resolveWsPeers() at runtime. */
 export const DEFAULT_WS_PEERS = OFFICIAL_WS_PEERS;
@@ -543,44 +544,57 @@ export function isExtensionPage() {
     && /^(chrome|moz|safari)-extension:$/.test(location.protocol);
 }
 
+async function importGlueFactory(scriptUrl) {
+  const mod = await import(/* @vite-ignore */ scriptUrl);
+  const initModule = mod.default;
+  if (typeof initModule !== 'function') {
+    throw new Error('wart-node.js did not export a default factory function');
+  }
+  return initModule;
+}
+
 /**
  * Load modularized Emscripten factory from /public/node (or extension /node/).
  *
- * Extension CSP forbids blob: module imports, so we load the glue as a real
- * extension URL module first. Website (Vite) still uses the blob path so the
- * huge emscripten file is never transformed by the bundler.
+ * Main thread and pthread workers must evaluate the **same** script URL.
+ * The old website path imported a blob: factory while workers loaded
+ * `/node/defi/wart-node.js` — Chrome/Brave stable then crashed in growMemViews
+ * (`undefined.buffer`) during GRUNT. Direct import keeps both on the real URL.
+ * Blob is fallback only (Vite refusing the public asset); that blob is also
+ * `mainScriptUrlOrBlob` and is never revoked.
  */
 async function loadEmscriptenFactory(glueUrl = NODE_GLUE_URL) {
   const absolute = new URL(glueUrl, window.location.href).href;
 
-  // Prefer direct ES-module import (required for MV3 extension CSP).
-  if (isExtensionPage() || absolute.startsWith('chrome-extension:')) {
-    const mod = await import(/* @vite-ignore */ absolute);
-    const initModule = mod.default;
-    if (typeof initModule !== 'function') {
-      throw new Error('wart-node.js did not export a default factory function');
+  try {
+    return {
+      initModule: await importGlueFactory(absolute),
+      scriptUrl: absolute,
+    };
+  } catch (directErr) {
+    if (isExtensionPage() || absolute.startsWith('chrome-extension:')) {
+      throw directErr;
     }
-    return initModule;
+    console.warn(
+      `[wasm] direct import of ${absolute} failed, falling back to blob:`,
+      directErr,
+    );
   }
 
   const res = await fetch(absolute, { credentials: 'same-origin' });
   if (!res.ok) {
     throw new Error(`Failed to load ${glueUrl}: HTTP ${res.status} ${res.statusText}`);
   }
-  const source = await res.text();
+  const source = patchEmscriptenPthreadGlue(await res.text());
   const patched =
     `const __wartGlueMetaUrl = ${JSON.stringify(absolute)};\n`
     + source.replace(/import\.meta\.url/g, '__wartGlueMetaUrl');
   const blob = new Blob([patched], { type: 'text/javascript' });
   const blobUrl = URL.createObjectURL(blob);
   try {
-    const mod = await import(/* @vite-ignore */ blobUrl);
-    const initModule = mod.default;
-    if (typeof initModule !== 'function') {
-      throw new Error('wart-node.js did not export a default factory function');
-    }
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 120_000);
-    return initModule;
+    const initModule = await importGlueFactory(blobUrl);
+    // Pthread workers load this blob via Module.mainScriptUrlOrBlob.
+    return { initModule, scriptUrl: blobUrl };
   } catch (err) {
     URL.revokeObjectURL(blobUrl);
     throw err;
@@ -903,7 +917,15 @@ export async function startWasmNode(moduleConfig) {
   installLocalBridgeWsRewrite(target, moduleConfig?.print);
 
   const glueUrl = moduleConfig?.__glueUrl || NODE_GLUE_URL;
-  const initModule = await loadEmscriptenFactory(glueUrl);
+  const { initModule, scriptUrl } = await loadEmscriptenFactory(glueUrl);
+  // Workers must load the same URL the factory was imported from (not a
+  // second copy of wart-node.js). Set on the constructor arg before init.
+  if (moduleConfig && scriptUrl) {
+    moduleConfig.mainScriptUrlOrBlob = scriptUrl;
+  }
+  moduleConfig?.print?.(
+    `[runtime] glue ${glueUrl} pthread script ${scriptUrl}`,
+  );
   // Factory returns a Promise that resolves to the live Module instance.
   const instance = await initModule(moduleConfig);
   if (typeof window !== 'undefined') {
