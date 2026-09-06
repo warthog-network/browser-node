@@ -250,10 +250,166 @@ const OPFS_WRITE_NEW = `function __wasmfs_opfs_write_access(accessID, bufPtr, le
   }
 }`;
 
-function replaceOnce(haystack, oldStr, newStr) {
-  if (!oldStr || haystack.includes(newStr) && !haystack.includes(oldStr)) {
-    return haystack;
+const OPFS_HELPER_OLD = `var wasmfsOPFSProxyFinish = ctx => {
+  // When using pthreads the proxy needs to know when the work is finished.
+  // When used with JSPI the work will be executed in an async block so there
+  // is no need to notify when done.
+  _emscripten_proxy_finish(ctx);
+};`;
+
+const OPFS_HELPER_NEW = `var wasmfsOPFSProxyFinish = ctx => {
+  // When using pthreads the proxy needs to know when the work is finished.
+  // When used with JSPI the work will be executed in an async block so there
+  // is no need to notify when done.
+  _emscripten_proxy_finish(ctx);
+};
+
+function wasmfsOPFSIsStaleHandle(e) {
+  return !!(e && (e.name === "InvalidStateError" || /state cached in an interface object/i.test(String(e && e.message || e))));
+}
+
+function wasmfsOPFSRefreshHandle(accessHandle) {
+  try {
+    accessHandle.getSize();
+  } catch (_) {}
+}`;
+
+const OPFS_READ_RETRY = `function __wasmfs_opfs_read_access(accessID, bufPtr, len, pos) {
+  pos = bigintToI53Checked(pos);
+  let accessHandle = wasmfsOPFSAccessHandles.get(accessID);
+  growMemViews();
+  if (!HEAPU8) return -28;
+  // Chrome stable rejects SharedArrayBuffer views on SyncAccessHandle.
+  let data = new Uint8Array(len);
+  try {
+    let nread = accessHandle.read(data, {
+      at: pos
+    });
+    growMemViews();
+    if (nread > 0 && HEAPU8) HEAPU8.set(data.subarray(0, nread), bufPtr);
+    return nread;
+  } catch (e) {
+    if (e.name == "TypeError") {
+      return -28;
+    }
+    if (wasmfsOPFSIsStaleHandle(e)) {
+      wasmfsOPFSRefreshHandle(accessHandle);
+      try {
+        let nread = accessHandle.read(data, {
+          at: pos
+        });
+        growMemViews();
+        if (nread > 0 && HEAPU8) HEAPU8.set(data.subarray(0, nread), bufPtr);
+        return nread;
+      } catch (e2) {
+        if (e2.name == "TypeError" || wasmfsOPFSIsStaleHandle(e2)) return -11;
+        err("unexpected error:", e2, e2.stack);
+        return -29;
+      }
+    }
+    err("unexpected error:", e, e.stack);
+    return -29;
   }
+}`;
+
+const OPFS_WRITE_RETRY = `function __wasmfs_opfs_write_access(accessID, bufPtr, len, pos) {
+  pos = bigintToI53Checked(pos);
+  let accessHandle = wasmfsOPFSAccessHandles.get(accessID);
+  growMemViews();
+  if (!HEAPU8) return -28;
+  let data = new Uint8Array(HEAPU8.subarray(bufPtr, bufPtr + len));
+  try {
+    return accessHandle.write(data, {
+      at: pos
+    });
+  } catch (e) {
+    if (e.name == "TypeError") {
+      return -28;
+    }
+    if (wasmfsOPFSIsStaleHandle(e)) {
+      wasmfsOPFSRefreshHandle(accessHandle);
+      try {
+        return accessHandle.write(data, {
+          at: pos
+        });
+      } catch (e2) {
+        if (e2.name == "TypeError" || wasmfsOPFSIsStaleHandle(e2)) return -11;
+        err("unexpected error:", e2, e2.stack);
+        return -29;
+      }
+    }
+    err("unexpected error:", e, e.stack);
+    return -29;
+  }
+}`;
+
+const OPFS_FLUSH_OLD = `var __wasmfs_opfs_flush_access = async (ctx, accessID, errPtr) => {
+  let accessHandle = wasmfsOPFSAccessHandles.get(accessID);
+  try {
+    await accessHandle.flush();
+  } catch {
+    let err = -29;
+    (growMemViews(), HEAP32)[((errPtr) >> 2)] = err;
+  }
+  wasmfsOPFSProxyFinish(ctx);
+};`;
+
+const OPFS_FLUSH_NEW = `var __wasmfs_opfs_flush_access = async (ctx, accessID, errPtr) => {
+  let accessHandle = wasmfsOPFSAccessHandles.get(accessID);
+  try {
+    await accessHandle.flush();
+  } catch (e) {
+    if (wasmfsOPFSIsStaleHandle(e)) {
+      wasmfsOPFSRefreshHandle(accessHandle);
+      try {
+        await accessHandle.flush();
+      } catch (e2) {
+        if (!wasmfsOPFSIsStaleHandle(e2)) err("unexpected error:", e2, e2.stack);
+        let err = -11;
+        (growMemViews(), HEAP32)[((errPtr) >> 2)] = err;
+      }
+    } else {
+      let err = -29;
+      (growMemViews(), HEAP32)[((errPtr) >> 2)] = err;
+    }
+  }
+  wasmfsOPFSProxyFinish(ctx);
+};`;
+
+const OPFS_GETSIZE_OLD = `var __wasmfs_opfs_get_size_access = async (ctx, accessID, sizePtr) => {
+  let accessHandle = wasmfsOPFSAccessHandles.get(accessID);
+  let size;
+  try {
+    size = await accessHandle.getSize();
+  } catch {
+    size = -29;
+  }
+  (growMemViews(), HEAP64)[((sizePtr) >> 3)] = BigInt(size);
+  wasmfsOPFSProxyFinish(ctx);
+};`;
+
+const OPFS_GETSIZE_NEW = `var __wasmfs_opfs_get_size_access = async (ctx, accessID, sizePtr) => {
+  let accessHandle = wasmfsOPFSAccessHandles.get(accessID);
+  let size;
+  try {
+    size = await accessHandle.getSize();
+  } catch (e) {
+    if (wasmfsOPFSIsStaleHandle(e)) {
+      try {
+        size = await accessHandle.getSize();
+      } catch {
+        size = -11;
+      }
+    } else {
+      size = -29;
+    }
+  }
+  (growMemViews(), HEAP64)[((sizePtr) >> 3)] = BigInt(size);
+  wasmfsOPFSProxyFinish(ctx);
+};`;
+
+function replaceOnce(haystack, oldStr, newStr) {
+  if (!oldStr || !newStr || haystack.includes(newStr)) return haystack;
   if (!haystack.includes(oldStr)) return haystack;
   return haystack.replace(oldStr, newStr);
 }
@@ -275,6 +431,11 @@ export function patchEmscriptenPthreadGlue(source) {
   out = replaceOnce(out, RTC_ICE_OLD, RTC_ICE_NEW);
   out = replaceOnce(out, OPFS_READ_OLD, OPFS_READ_NEW);
   out = replaceOnce(out, OPFS_WRITE_OLD, OPFS_WRITE_NEW);
+  out = replaceOnce(out, OPFS_HELPER_OLD, OPFS_HELPER_NEW);
+  out = replaceOnce(out, OPFS_READ_NEW, OPFS_READ_RETRY);
+  out = replaceOnce(out, OPFS_WRITE_NEW, OPFS_WRITE_RETRY);
+  out = replaceOnce(out, OPFS_FLUSH_OLD, OPFS_FLUSH_NEW);
+  out = replaceOnce(out, OPFS_GETSIZE_OLD, OPFS_GETSIZE_NEW);
   return out;
 }
 
@@ -283,5 +444,6 @@ export function pthreadGluePatchApplied(source) {
   return s.includes('if (!wasmMemory) return;')
     && s.includes('pthread load: wasmMemory missing from main thread')
     && s.includes('installLiveHeapExports')
-    && s.includes('Chrome stable rejects SharedArrayBuffer views');
+    && s.includes('Chrome stable rejects SharedArrayBuffer views')
+    && s.includes('wasmfsOPFSIsStaleHandle');
 }

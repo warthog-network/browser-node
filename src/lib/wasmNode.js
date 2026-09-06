@@ -332,6 +332,9 @@ export async function prepareOpfsForStart({ forceClear = false, subdir = null } 
 /** True when the exception looks like OPFS/SQLite lock / readonly. */
 export function isOpfsReadonlyError(err) {
   const msg = String(err?.message || err || '');
+  // Chromium in-place SyncAccessHandle cache (Brave/Chrome stable). Not a
+  // cross-tab lock — glue retries it; do not kill the pthread pool.
+  if (/state cached in an interface object/i.test(msg)) return false;
   return /readonly database|NoModificationAllowed|InvalidStateError|SQLITE_READONLY|write a readonly/i.test(msg);
 }
 

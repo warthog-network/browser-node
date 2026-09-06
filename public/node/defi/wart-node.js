@@ -2126,6 +2126,16 @@ var wasmfsOPFSProxyFinish = ctx => {
   _emscripten_proxy_finish(ctx);
 };
 
+function wasmfsOPFSIsStaleHandle(e) {
+  return !!(e && (e.name === "InvalidStateError" || /state cached in an interface object/i.test(String(e && e.message || e))));
+}
+
+function wasmfsOPFSRefreshHandle(accessHandle) {
+  try {
+    accessHandle.getSize();
+  } catch (_) {}
+}
+
 var __wasmfs_opfs_close_access = async (ctx, accessID, errPtr) => {
   let accessHandle = wasmfsOPFSAccessHandles.get(accessID);
   try {
@@ -2148,9 +2158,20 @@ var __wasmfs_opfs_flush_access = async (ctx, accessID, errPtr) => {
   let accessHandle = wasmfsOPFSAccessHandles.get(accessID);
   try {
     await accessHandle.flush();
-  } catch {
-    let err = -29;
-    (growMemViews(), HEAP32)[((errPtr) >> 2)] = err;
+  } catch (e) {
+    if (wasmfsOPFSIsStaleHandle(e)) {
+      wasmfsOPFSRefreshHandle(accessHandle);
+      try {
+        await accessHandle.flush();
+      } catch (e2) {
+        if (!wasmfsOPFSIsStaleHandle(e2)) err("unexpected error:", e2, e2.stack);
+        let err = -11;
+        (growMemViews(), HEAP32)[((errPtr) >> 2)] = err;
+      }
+    } else {
+      let err = -29;
+      (growMemViews(), HEAP32)[((errPtr) >> 2)] = err;
+    }
   }
   wasmfsOPFSProxyFinish(ctx);
 };
@@ -2245,8 +2266,16 @@ var __wasmfs_opfs_get_size_access = async (ctx, accessID, sizePtr) => {
   let size;
   try {
     size = await accessHandle.getSize();
-  } catch {
-    size = -29;
+  } catch (e) {
+    if (wasmfsOPFSIsStaleHandle(e)) {
+      try {
+        size = await accessHandle.getSize();
+      } catch {
+        size = -11;
+      }
+    } else {
+      size = -29;
+    }
   }
   (growMemViews(), HEAP64)[((sizePtr) >> 3)] = BigInt(size);
   wasmfsOPFSProxyFinish(ctx);
@@ -2375,6 +2404,21 @@ function __wasmfs_opfs_read_access(accessID, bufPtr, len, pos) {
     if (e.name == "TypeError") {
       return -28;
     }
+    if (wasmfsOPFSIsStaleHandle(e)) {
+      wasmfsOPFSRefreshHandle(accessHandle);
+      try {
+        let nread = accessHandle.read(data, {
+          at: pos
+        });
+        growMemViews();
+        if (nread > 0 && HEAPU8) HEAPU8.set(data.subarray(0, nread), bufPtr);
+        return nread;
+      } catch (e2) {
+        if (e2.name == "TypeError" || wasmfsOPFSIsStaleHandle(e2)) return -11;
+        err("unexpected error:", e2, e2.stack);
+        return -29;
+      }
+    }
     err("unexpected error:", e, e.stack);
     return -29;
   }
@@ -2458,6 +2502,18 @@ function __wasmfs_opfs_write_access(accessID, bufPtr, len, pos) {
   } catch (e) {
     if (e.name == "TypeError") {
       return -28;
+    }
+    if (wasmfsOPFSIsStaleHandle(e)) {
+      wasmfsOPFSRefreshHandle(accessHandle);
+      try {
+        return accessHandle.write(data, {
+          at: pos
+        });
+      } catch (e2) {
+        if (e2.name == "TypeError" || wasmfsOPFSIsStaleHandle(e2)) return -11;
+        err("unexpected error:", e2, e2.stack);
+        return -29;
+      }
     }
     err("unexpected error:", e, e.stack);
     return -29;

@@ -29,6 +29,9 @@ if (defi.includes('Module["HEAPU8"].buffer')) {
 if (!defi.includes('installLiveHeapExports')) {
   throw new Error('DeFi glue missing live HEAP getters');
 }
+if (!defi.includes('wasmfsOPFSIsStaleHandle')) {
+  throw new Error('DeFi glue missing OPFS InvalidStateError retry');
+}
 if (patchEmscriptenPthreadGlue(official) !== official) {
   throw new Error('Official1 glue must not be rewritten');
 }
