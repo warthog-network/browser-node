@@ -65,6 +65,23 @@
   line-height: 1.4;
 }
 
+.dash__header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.dash__nets {
+  display: flex;
+  gap: 0.2rem;
+  padding: 0.2rem;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+
 /* Status pill */
 .dash__badge {
   flex-shrink: 0;

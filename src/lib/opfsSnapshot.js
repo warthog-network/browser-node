@@ -121,13 +121,22 @@ export async function inspectSqliteHeader(source) {
  * Read OPFS chain.db3 header + size; fail closed on WAL mode or bad magic.
  * @returns {{ ok: true, bytes: number } | { ok: false, error: string, bytes?: number }}
  */
-export async function verifyOpfsChainDb() {
+async function opfsWorkDir(subdir) {
+  const root = await navigator.storage.getDirectory();
+  if (!subdir) return root;
+  return root.getDirectoryHandle(subdir, { create: true });
+}
+
+export async function verifyOpfsChainDb({ subdir } = {}) {
   if (!hasOpfs()) {
     return { ok: false, error: 'OPFS not available' };
   }
   try {
     const root = await navigator.storage.getDirectory();
-    const handle = await root.getFileHandle(CHAIN_DB_NAME);
+    const dir = subdir
+      ? await root.getDirectoryHandle(subdir)
+      : root;
+    const handle = await dir.getFileHandle(CHAIN_DB_NAME);
     const file = await handle.getFile();
     if (file.size < 100) {
       return { ok: false, error: `chain.db3 too small (${formatBytes(file.size)})`, bytes: file.size };
@@ -172,6 +181,7 @@ export async function importChainDbBlob(blob, {
   log,
   onProgress,
   clearPeerDbs = true,
+  subdir = null,
 } = {}) {
   if (!hasOpfs()) {
     return { ok: false, error: 'OPFS not available (need Chromium + secure context)' };
@@ -221,9 +231,9 @@ export async function importChainDbBlob(blob, {
   terminateWasmWorkers(log);
   await new Promise((r) => setTimeout(r, 500));
 
-  const root = await navigator.storage.getDirectory();
+  const root = await opfsWorkDir(subdir);
   const total = blob.size;
-  log?.(`[snapshot] writing ${CHAIN_DB_NAME} (${formatBytes(total)})…`);
+  log?.(`[snapshot] writing ${subdir ? `${subdir}/` : ''}${CHAIN_DB_NAME} (${formatBytes(total)})…`);
   log?.(
     '[snapshot] tip: native DB must be stopped + wal_checkpoint(TRUNCATE) + journal_mode=DELETE '
     + 'or SQLite will throw disk I/O error in the browser',
@@ -284,7 +294,7 @@ export async function importChainDbBlob(blob, {
     };
   }
 
-  const verify = await verifyOpfsChainDb();
+  const verify = await verifyOpfsChainDb({ subdir });
   if (!verify.ok) {
     return { ok: false, error: verify.error || 'Post-write verify failed' };
   }
@@ -297,7 +307,7 @@ export async function importChainDbBlob(blob, {
     };
   }
 
-  const entries = await listOpfsEntries();
+  const entries = await listOpfsEntries(subdir);
   log?.(
     `[snapshot] verified SQLite header · ${formatBytes(verify.bytes)}`
     + ` · journal header ${inspected.walMode ? 'WAL (bad for browser)' : 'DELETE (ok)'}`,
@@ -314,7 +324,7 @@ export async function importChainDbBlob(blob, {
  * URL must be fetchable under COEP (same-origin, or CORP/CORS headers).
  * Do NOT route multi‑GB files through Netlify /api/proxy.
  */
-export async function importChainDbFromUrl(url, { log, onProgress, clearPeerDbs = true } = {}) {
+export async function importChainDbFromUrl(url, { log, onProgress, clearPeerDbs = true, subdir = null } = {}) {
   const u = String(url || '').trim();
   if (!u) return { ok: false, error: 'Empty snapshot URL' };
 
@@ -345,7 +355,7 @@ export async function importChainDbFromUrl(url, { log, onProgress, clearPeerDbs 
   }
   if (!res.body) {
     const blob = await res.blob();
-    return importChainDbBlob(blob, { log, onProgress, clearPeerDbs });
+    return importChainDbBlob(blob, { log, onProgress, clearPeerDbs, subdir });
   }
 
   // Stream response → Blob via chunks (createWritable needs a Blob or we pipe differently)
@@ -358,7 +368,7 @@ export async function importChainDbFromUrl(url, { log, onProgress, clearPeerDbs 
     return { ok: false, error: 'OPFS not available' };
   }
 
-  const root = await navigator.storage.getDirectory();
+  const root = await opfsWorkDir(subdir);
   try {
     await root.removeEntry(CHAIN_DB_NAME);
   } catch {
@@ -476,24 +486,28 @@ export async function importChainDbFromUrl(url, { log, onProgress, clearPeerDbs 
     };
   }
 
-  const verify = await verifyOpfsChainDb();
+  const verify = await verifyOpfsChainDb({ subdir });
   if (!verify.ok) {
     return { ok: false, error: verify.error || 'Post-write verify failed' };
   }
 
-  const entries = await listOpfsEntries();
+  const entries = await listOpfsEntries(subdir);
   log?.(`[snapshot] verified · ${formatBytes(written)}`);
   return { ok: true, bytes: written, entries, verified: true };
 }
 
-/** Best-effort size of chain.db3 already in OPFS. */
-export async function getLocalChainDbInfo() {
+/** Best-effort size of chain.db3 already in OPFS (optional network subdir). */
+export async function getLocalChainDbInfo({ subdir } = {}) {
   if (!hasOpfs()) return { present: false };
   try {
     const root = await navigator.storage.getDirectory();
-    const handle = await root.getFileHandle(CHAIN_DB_NAME);
+    const dir = subdir
+      ? await root.getDirectoryHandle(subdir)
+      : root;
+    const handle = await dir.getFileHandle(CHAIN_DB_NAME);
     const file = await handle.getFile();
-    return { present: true, bytes: file.size, name: CHAIN_DB_NAME };
+    const name = subdir ? `${subdir}/${CHAIN_DB_NAME}` : CHAIN_DB_NAME;
+    return { present: true, bytes: file.size, name };
   } catch {
     return { present: false };
   }

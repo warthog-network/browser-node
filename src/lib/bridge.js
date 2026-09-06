@@ -159,10 +159,12 @@ export async function openExtensionSidePanel() {
  */
 export function localDevWsBridgeUrl(
   loc = typeof window !== 'undefined' ? window.location : null,
+  path = LOCAL_WS_BRIDGE_PATH,
 ) {
-  if (!loc) return `ws://127.0.0.1:4321${LOCAL_WS_BRIDGE_PATH}`;
+  const bridgePath = path || LOCAL_WS_BRIDGE_PATH;
+  if (!loc) return `ws://127.0.0.1:4321${bridgePath}`;
   const scheme = loc.protocol === 'https:' ? 'wss' : 'ws';
-  return `${scheme}://${loc.host}${LOCAL_WS_BRIDGE_PATH}`;
+  return `${scheme}://${loc.host}${bridgePath}`;
 }
 
 /**

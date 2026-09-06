@@ -22,13 +22,20 @@
 
 import {
   DEFAULT_WS_PEERS as OFFICIAL_WS_PEERS,
-  resolveDefaultWsPeers,
 } from './bridge.js';
+import {
+  DEFAULT_NODE_NETWORK_ID,
+  defaultWsPeersForNetwork,
+  getNodeNetwork,
+  peersLookCrossNetwork,
+  peersStorageKey,
+} from './nodeNetworks.js';
 
 /** Default P2P bridge (public Official1). Prefer resolveWsPeers() at runtime. */
 export const DEFAULT_WS_PEERS = OFFICIAL_WS_PEERS;
 
 export const NODE_GLUE_URL = '/node/wart-node.js';
+export const DEFI_NODE_GLUE_URL = '/node/defi/wart-node.js';
 
 export function isCrossOriginIsolated() {
   return typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated === true;
@@ -53,15 +60,23 @@ export function hasOpfs() {
     && typeof navigator.storage.getDirectory === 'function';
 }
 
-/** List top-level OPFS entry names (best-effort). */
-export async function listOpfsEntries() {
+/** List OPFS entry names (best-effort). `subdir` scopes to a network session dir. */
+export async function listOpfsEntries(subdir) {
   if (!hasOpfs()) return [];
   try {
     const root = await navigator.storage.getDirectory();
+    let dir = root;
+    if (subdir) {
+      try {
+        dir = await root.getDirectoryHandle(subdir);
+      } catch {
+        return [];
+      }
+    }
     const names = [];
     // for-await works on FileSystemDirectoryHandle in modern Chromium
     // @ts-ignore
-    for await (const [name] of root.entries()) {
+    for await (const [name] of dir.entries()) {
       names.push(name);
     }
     return names;
@@ -137,6 +152,7 @@ export function terminateWasmWorkers(log) {
   if (typeof window !== 'undefined') {
     try { window.wartNode = undefined; } catch { /* ignore */ }
     try { window.Module = undefined; } catch { /* ignore */ }
+    try { window.__wartRunningNetworkId = undefined; } catch { /* ignore */ }
   }
 
   return { terminated };
@@ -153,6 +169,10 @@ export async function clearOpfsStorage({
   retryDelayMs = 400,
   terminateWorkers = true,
   log,
+  /** When set, only delete that session directory (e.g. `defi`). */
+  subdir = null,
+  /** Root names to keep when wiping Official1 (other network session dirs). */
+  keepDirs = ['defi'],
 } = {}) {
   if (!hasOpfs()) {
     return { ok: false, error: 'OPFS not available (need Chromium + secure context)' };
@@ -166,31 +186,46 @@ export async function clearOpfsStorage({
 
   let lastRemoved = [];
   let lastFailed = [];
+  const keep = new Set(subdir ? [] : (keepDirs || []));
 
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       const root = await navigator.storage.getDirectory();
       const removed = [];
       const failed = [];
-      // Snapshot names first — mutating during async iteration is flaky.
-      const names = [];
-      // @ts-ignore
-      for await (const [name] of root.entries()) {
-        names.push(name);
-      }
-      for (const name of names) {
+      if (subdir) {
         try {
-          await root.removeEntry(name, { recursive: true });
-          removed.push(name);
+          await root.removeEntry(subdir, { recursive: true });
+          removed.push(subdir);
         } catch (e) {
-          failed.push(`${name}: ${e?.message || e}`);
+          const msg = e?.message || String(e);
+          if (!/not found|does not exist|NotFoundError/i.test(msg)) {
+            failed.push(`${subdir}: ${msg}`);
+          }
+        }
+      } else {
+        // Snapshot names first — mutating during async iteration is flaky.
+        const names = [];
+        // @ts-ignore
+        for await (const [name] of root.entries()) {
+          names.push(name);
+        }
+        for (const name of names) {
+          if (keep.has(name)) continue;
+          try {
+            await root.removeEntry(name, { recursive: true });
+            removed.push(name);
+          } catch (e) {
+            failed.push(`${name}: ${e?.message || e}`);
+          }
         }
       }
       lastRemoved = removed;
       lastFailed = failed;
       if (!failed.length) {
-        // Confirm empty
-        const left = await listOpfsEntries();
+        const left = subdir
+          ? await listOpfsEntries(subdir)
+          : (await listOpfsEntries()).filter((n) => !keep.has(n));
         if (left.length === 0) {
           clearOpfsNeedsResetFlag();
           return { ok: true, removed, attempts: attempt + 1 };
@@ -224,7 +259,7 @@ export async function clearOpfsStorage({
  * Full recovery path: kill workers → wipe OPFS → optional hard reload.
  * Prefer this over Clear alone when SQLite is readonly mid-run.
  */
-export async function recoverOpfsStorage({ reload = true, log } = {}) {
+export async function recoverOpfsStorage({ reload = true, log, subdir = null } = {}) {
   markOpfsNeedsReset();
   log?.('[opfs] recover: terminating workers…');
   terminateWasmWorkers(log);
@@ -236,6 +271,7 @@ export async function recoverOpfsStorage({ reload = true, log } = {}) {
     retryDelayMs: 350,
     terminateWorkers: true,
     log,
+    subdir,
   });
 
   if (result.ok) {
@@ -262,7 +298,7 @@ export async function recoverOpfsStorage({ reload = true, log } = {}) {
  * - If a prior run marked OPFS dirty, clear it
  * - Empty origin is fine (DBs created on first start)
  */
-export async function prepareOpfsForStart({ forceClear = false } = {}) {
+export async function prepareOpfsForStart({ forceClear = false, subdir = null } = {}) {
   if (!hasOpfs()) {
     return {
       ok: false,
@@ -270,12 +306,12 @@ export async function prepareOpfsForStart({ forceClear = false } = {}) {
         'OPFS is not available. Use Chrome/Edge on http://127.0.0.1 or https.',
     };
   }
-  const entries = await listOpfsEntries();
+  const entries = await listOpfsEntries(subdir);
   const shouldClear = forceClear || opfsNeedsReset();
   if (!shouldClear) {
     return { ok: true, cleared: false, entries };
   }
-  const result = await clearOpfsStorage();
+  const result = await clearOpfsStorage({ subdir });
   if (!result.ok) {
     return {
       ok: false,
@@ -288,7 +324,7 @@ export async function prepareOpfsForStart({ forceClear = false } = {}) {
     ok: true,
     cleared: true,
     removed: result.removed,
-    entries: await listOpfsEntries(),
+    entries: await listOpfsEntries(subdir),
   };
 }
 
@@ -312,8 +348,12 @@ export function isWasmOomError(err) {
     || /limit is\s+\d+\s+bytes!/i.test(msg);
 }
 
-/** Resolve bridge peer list: ?peers= wins, else localStorage, else env-aware default. */
-export function resolveWsPeers(search = typeof window !== 'undefined' ? window.location.search : '') {
+/** Resolve bridge peer list: ?peers= wins, else per-network storage, else default. */
+export function resolveWsPeers(
+  search = typeof window !== 'undefined' ? window.location.search : '',
+  networkId = DEFAULT_NODE_NETWORK_ID,
+) {
+  const net = getNodeNetwork(networkId);
   try {
     const params = new URLSearchParams(search);
     const fromQuery = params.get('peers') || params.get('WS_PEERS');
@@ -322,11 +362,14 @@ export function resolveWsPeers(search = typeof window !== 'undefined' ? window.l
     // ignore
   }
   try {
+    const keyed = localStorage.getItem(peersStorageKey(net.id));
+    if (keyed && keyed.trim() && !peersLookCrossNetwork(keyed, net.id)) {
+      return keyed.trim();
+    }
+    // Legacy single key — Official1 only, and never mix into DeFi.
     const stored = localStorage.getItem('wsPeers');
-    if (stored && stored.trim()) {
-      // Old sessions often saved public wss:// while local dev proxy is healthier.
-      // Allow override via ?peers=; otherwise prefer loopback proxy on localhost.
-      const pageDefault = resolveDefaultWsPeers();
+    if (stored && stored.trim() && !net.testnet && !peersLookCrossNetwork(stored, net.id)) {
+      const pageDefault = defaultWsPeersForNetwork(net.id);
       if (
         typeof window !== 'undefined'
         && pageDefault.includes('/ws-bridge')
@@ -340,7 +383,7 @@ export function resolveWsPeers(search = typeof window !== 'undefined' ? window.l
   } catch {
     // ignore
   }
-  return resolveDefaultWsPeers();
+  return defaultWsPeersForNetwork(net.id);
 }
 
 function paramsHasForcePublic(search) {
@@ -376,6 +419,7 @@ function applyWsPeersEnv(mod, peers) {
  */
 export function createModuleConfig({
   wsPeers,
+  networkId = DEFAULT_NODE_NETWORK_ID,
   print,
   setStatus,
   onChain,
@@ -385,29 +429,36 @@ export function createModuleConfig({
   onMempoolErase,
   onProgress,
 } = {}) {
-  const peers = wsPeers || DEFAULT_WS_PEERS;
+  const net = getNodeNetwork(networkId);
+  const peers = wsPeers || defaultWsPeersForNetwork(net.id);
   // Local state for setStatus throttling — never hang fields off the config
   // object after Emscripten poisons moduleArg getters.
   const statusState = { time: Date.now(), text: '' };
   let depTotal = 0;
 
   const peerCount = String(peers).split(/[;]+/).map((s) => s.trim()).filter(Boolean).length;
+  const argv = Array.isArray(net.argv) && net.argv.length ? [...net.argv] : ['--enable-webrtc'];
 
   const config = {
     /** Used by startWasmNode installLocalBridgeWsRewrite. */
     __wsPeers: peers,
+    __glueUrl: net.glueUrl,
+    __networkId: net.id,
 
     /**
-     * Passed to C main as argv. Browser core also enables WebRTC by default;
-     * this keeps the flag explicit if config.cpp path changes.
+     * Passed to C main as argv. DeFi must include --testnet and a separate
+     * OPFS session so Official1 chain.db3 is never opened.
      */
-    arguments: ['--enable-webrtc'],
+    arguments: argv,
 
     locateFile(path) {
+      const name = path.split('/').pop();
       if (path.endsWith('.wasm') || path.endsWith('.worker.js') || path.endsWith('.worker.mjs') || path.endsWith('.js')) {
-        return `/node/${path.split('/').pop().replace(/\.mjs$/, '.js')}`;
+        // Official1 triad historically aliases .worker.mjs → .worker.js.
+        const file = net.id === 'official1' ? name.replace(/\.mjs$/, '.js') : name;
+        return `${net.assetDir}/${file}`;
       }
-      return `/node/${path}`;
+      return `${net.assetDir}/${path}`;
     },
 
     /**
@@ -418,7 +469,8 @@ export function createModuleConfig({
         try {
           const value = applyWsPeersEnv(mod, peers);
           print?.(`[preRun] ENV.WS_PEERS=${value} (${peerCount} peer URL${peerCount === 1 ? '' : 's'})`);
-          print?.('[preRun] argv --enable-webrtc (parallel peers via Official1 signaling when available)');
+          print?.(`[preRun] argv ${argv.join(' ')}`);
+          print?.(`[preRun] network=${net.id} WASM ${net.versionText} session=${net.session}`);
         } catch (e) {
           print?.(`[preRun] ENV set failed: ${e?.message || e}`);
         }
@@ -429,7 +481,7 @@ export function createModuleConfig({
       // Do NOT touch the constructor config object here (it is poisoned).
       print?.('[runtime] onRuntimeInitialized — C/C++ main will run');
       print?.(`[runtime] WS_PEERS=${peers}`);
-      print?.('[runtime] sync build: window=32 · maxRequests=32 · heap 2048MB · WebRTC on');
+      print?.(`[runtime] ${net.label} · GRUNT ${net.gruntConnect} · heap 2048MB · WebRTC on`);
       setStatus?.('Runtime initialized — full node starting');
     },
 
@@ -554,17 +606,22 @@ export function unpackNodeVersion(u32) {
   };
 }
 
-/** This browser WASM node version (must match public/node wart-node build / Official1). */
+/** Official1 WASM version (must match public/node wart-node build). */
 export const WASM_NODE_VERSION = { major: 0, minor: 9, patch: 6 };
 
 /**
- * Build outbound "WARTHOG GRUNT?" (24 bytes) — core ConnectionBase::send_handshake outbound.
+ * Build outbound GRUNT (24 bytes) — core ConnectionBase::send_handshake outbound.
  * Layout: magic(14) + u32be version + zeros(4) with u16be listen-port at offset 22.
+ * DeFi testnet uses "TESTNET GRUNT?" — pass `magic` from the network profile.
  */
-export function buildConnectGrunt(version = WASM_NODE_VERSION, listenPort = 0) {
+export function buildConnectGrunt(
+  version = WASM_NODE_VERSION,
+  listenPort = 0,
+  magic = 'WARTHOG GRUNT?',
+) {
   const enc = new TextEncoder();
   const grunt = new Uint8Array(24);
-  grunt.set(enc.encode('WARTHOG GRUNT?'), 0);
+  grunt.set(enc.encode(magic), 0);
   const ver = packNodeVersion(version.major, version.minor, version.patch);
   new DataView(grunt.buffer).setUint32(14, ver >>> 0, false);
   // offsets 18–21 already 0; port overwrites 22–23
@@ -614,7 +671,8 @@ export function installLocalBridgeWsRewrite(targetWssUrl, log) {
   const isP2pBridge = (u) =>
     typeof u === 'string'
     && (
-      /\/ws-bridge\/?(\?|$)/.test(u)
+      /\/ws-bridge(-defi)?\/?(\?|$)/.test(u)
+      || /\/ws-defi\/?(\?|$)/.test(u)
       || /\/ws\/?(\?|$)/.test(u)
       || localBridge.test(u)
     )
@@ -844,8 +902,12 @@ export async function startWasmNode(moduleConfig) {
   const target = moduleConfig?.__wsPeers || DEFAULT_WS_PEERS;
   installLocalBridgeWsRewrite(target, moduleConfig?.print);
 
-  const initModule = await loadEmscriptenFactory(NODE_GLUE_URL);
+  const glueUrl = moduleConfig?.__glueUrl || NODE_GLUE_URL;
+  const initModule = await loadEmscriptenFactory(glueUrl);
   // Factory returns a Promise that resolves to the live Module instance.
   const instance = await initModule(moduleConfig);
+  if (typeof window !== 'undefined') {
+    window.__wartRunningNetworkId = moduleConfig?.__networkId || DEFAULT_NODE_NETWORK_ID;
+  }
   return instance;
 }

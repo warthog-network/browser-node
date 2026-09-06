@@ -36,6 +36,21 @@
     Cross-Origin-Embedder-Policy = "require-corp"
 
 [[headers]]
+  for = "/node/defi/*"
+  [headers.values]
+    Cross-Origin-Resource-Policy = "same-origin"
+    Cross-Origin-Opener-Policy = "same-origin"
+    Cross-Origin-Embedder-Policy = "require-corp"
+
+[[headers]]
+  for = "/node/defi/*.wasm"
+  [headers.values]
+    Content-Type = "application/wasm"
+    Cross-Origin-Resource-Policy = "same-origin"
+    Cross-Origin-Opener-Policy = "same-origin"
+    Cross-Origin-Embedder-Policy = "require-corp"
+
+[[headers]]
   for = "/_astro/*"
   [headers.values]
     Cross-Origin-Resource-Policy = "same-origin"

@@ -4,6 +4,11 @@ import {
   ticketNeedsNoticeProof,
   validateNoticeOnL1,
 } from './cartesiNoticeProof.js';
+import {
+  fetchLocalChainHead,
+  isLocalDefiNodeLive,
+  verifyLocalForPayout,
+} from './localWartChain.js';
 
 /**
  * Independent checks a pool signer must pass before handing over a share.
@@ -202,6 +207,14 @@ export async function fetchReleaseNotice(ticketId) {
 }
 
 export async function fetchIndependentHead() {
+  if (isLocalDefiNodeLive()) {
+    try {
+      const head = await fetchLocalChainHead();
+      if (head?.height) return { source: 'local-wasm', ...head };
+    } catch {
+      /* fall through to VPS — local node may still be catching up */
+    }
+  }
   try {
     const j = await fetchJson(WART_HEAD);
     const head = extractWartHead(j);
@@ -238,6 +251,7 @@ export function evaluateVerification({
     noticeProof: false,
     inspectTicket: false,
     spv: false,
+    localChain: false,
   };
   const reasons = [];
   const lab = Boolean(req?.labDemo) || /^lab-demo-/.test(String(req?.ticketId || ''));
@@ -400,6 +414,26 @@ export async function verifyOpenRequest(req) {
     notice,
     wartHead,
   });
+  if (isLocalDefiNodeLive()) {
+    const local = await verifyLocalForPayout({
+      poolAddress: req.poolAddress,
+      amountE8: req.amountE8,
+    });
+    ev.local = {
+      skipped: local.skipped,
+      source: local.source,
+      freeE8: local.balance?.free?.toString?.() || null,
+    };
+    if (!local.skipped && !local.ok) {
+      ev.ok = false;
+      ev.checks.localChain = false;
+      for (const r of local.reasons || []) {
+        if (!ev.reasons.includes(r)) ev.reasons.push(r);
+      }
+    } else if (!local.skipped) {
+      ev.checks.localChain = true;
+    }
+  }
   if (notice && notice._hasProof && !notice._noticeProofOk && ev.checks.notice) {
     const extra = notice._noticeProofError || 'validateNotice failed';
     if (!ev.reasons.some((r) => /validateNotice|notice proof/i.test(r))) {
@@ -423,6 +457,7 @@ export async function verifyOpenRequest(req) {
       inspectOk: ev.checks.inspect,
       inspectTicketOk: ev.checks.inspectTicket,
       spvOk: ev.checks.spv,
+      localChainOk: ev.checks.localChain,
       noticeIndex: ev.notice?.index ?? null,
       machineInputs: ev.machine.processedInputCount,
       machineBestHeight: ev.machine.bestHeight,
@@ -465,8 +500,15 @@ export function formatVerifyLine(v) {
   const bit = (ok, label) => `${ok ? '✓' : '✗'} ${label}`;
   const lag =
     v.wartHead?.lag == null ? '' : ` · lag ${v.wartHead.lag}`;
+  const localBit = v.checks?.localChain
+    ? ' · ✓ local-node'
+    : v.wartHead?.source === 'local-wasm'
+      ? ' · local-head'
+      : v.wartHead?.source === 'defi-head'
+        ? ' · vps-head'
+        : '';
   const h = v.machine?.bestHeight
     ? ` · SPV #${v.machine.bestHeight}/${v.wartHead?.height || '?'}${lag}`
     : '';
-  return `${noticeBit} · ${bit(v.checks?.inspect, 'machine')} · ${bit(v.checks?.spv, 'SPV')}${h}`;
+  return `${noticeBit} · ${bit(v.checks?.inspect, 'machine')} · ${bit(v.checks?.spv, 'SPV')}${h}${localBit}`;
 }

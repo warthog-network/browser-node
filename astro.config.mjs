@@ -41,8 +41,25 @@ export default defineConfig({
         'Cross-Origin-Opener-Policy': 'same-origin',
         'Cross-Origin-Embedder-Policy': 'require-corp',
       },
-      // Local dev only: browser → same-origin /ws-bridge → Official1 wss
+      // Local dev only: same-origin WS proxies so COEP pages can dial /ws.
+      // Longer prefixes MUST come first — Vite matches `/ws-bridge` as a
+      // prefix of `/ws-bridge-defi` and would send DeFi GRUNT to Official1
+      // (open, then 1006 ~250ms later). `/ws-defi` cannot collide.
       proxy: {
+        '/ws-defi': {
+          target: 'https://warthog-defitestnet.duckdns.org',
+          changeOrigin: true,
+          secure: true,
+          ws: true,
+          rewrite: (p) => p.replace(/^\/ws-defi/, '/ws'),
+        },
+        '/ws-bridge-defi': {
+          target: 'https://warthog-defitestnet.duckdns.org',
+          changeOrigin: true,
+          secure: true,
+          ws: true,
+          rewrite: (p) => p.replace(/^\/ws-bridge-defi/, '/ws'),
+        },
         '/ws-bridge': {
           target: 'https://warthognode.duckdns.org',
           changeOrigin: true,

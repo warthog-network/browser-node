@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  DEFAULT_WS_PEERS,
   clearOpfsStorage,
   createModuleConfig,
   hasOpfs,
@@ -18,8 +17,14 @@ import {
   terminateWasmWorkers,
 } from '../lib/wasmNode.js';
 import {
-  OFFICIAL1,
-  localDevWsBridgeUrl,
+  NODE_NETWORK_LIST,
+  defaultWsPeersForNetwork,
+  getNodeNetwork,
+  persistNodeNetworkId,
+  peersStorageKey,
+  resolveNodeNetworkId,
+} from '../lib/nodeNetworks.js';
+import {
   isLocalDevHost,
   isExtensionPage,
   isExtensionPopup,
@@ -28,10 +33,8 @@ import {
   openExtensionSidePanel,
   parsePeerList,
   formatPeerList,
-  mainnetPeerPreset,
   probeBridgeHttp,
   probeBridgeWs,
-  resolveDefaultWsPeers,
 } from '../lib/bridge.js';
 import {
   formatBytes,
@@ -66,8 +69,17 @@ export default function WasmBrowserNode() {
   const [isolated, setIsolated] = useState(false);
   const [sab, setSab] = useState(false);
   const [opfsOk, setOpfsOk] = useState(false);
-  const [wsPeers, setWsPeers] = useState(DEFAULT_WS_PEERS);
-  const [peersInput, setPeersInput] = useState(DEFAULT_WS_PEERS);
+  const [networkId, setNetworkId] = useState(() => resolveNodeNetworkId());
+  const network = useMemo(() => getNodeNetwork(networkId), [networkId]);
+  const [wsPeers, setWsPeers] = useState(() => resolveWsPeers(
+    typeof window !== 'undefined' ? window.location.search : '',
+    resolveNodeNetworkId(),
+  ));
+  const [peersInput, setPeersInput] = useState(() => resolveWsPeers(
+    typeof window !== 'undefined' ? window.location.search : '',
+    resolveNodeNetworkId(),
+  ));
+  const [defiTriadReady, setDefiTriadReady] = useState(false);
 
   const [status, setStatus] = useState('Ready — click Start full node');
   const [running, setRunning] = useState(false);
@@ -125,7 +137,7 @@ export default function WasmBrowserNode() {
     });
   }, []);
 
-  const runBridgeProbes = useCallback(async (wsUrl, { probeP2pWs = false, probeStream = false } = {}) => {
+  const runBridgeProbes = useCallback(async (wsUrl, { probeP2pWs = false, probeStream = false } = {}, netId = networkId) => {
     setBridgeHttp({ state: 'checking' });
     // Defaults on page load: HTTP only.
     // - /ws  = P2P bridge (rate-limit/ban risk) — never auto
@@ -147,8 +159,9 @@ export default function WasmBrowserNode() {
       });
     }
 
-    appendLog(`Probing Official1 HTTP ${OFFICIAL1.httpBase}/chain/head …`);
-    const http = await probeBridgeHttp(OFFICIAL1.httpBase);
+    const net = getNodeNetwork(netId);
+    appendLog(`Probing ${net.label} HTTP ${net.httpBase}/chain/head …`);
+    const http = await probeBridgeHttp(net.httpBase);
     if (http.ok) {
       setBridgeHttp({
         state: 'ok',
@@ -156,44 +169,43 @@ export default function WasmBrowserNode() {
         synced: http.synced ?? http.data?.synced,
       });
       appendLog(
-        `Official1 HTTP OK — height ${http.height ?? http.data?.height ?? '?'} `
+        `${net.label} HTTP OK — height ${http.height ?? http.data?.height ?? '?'} `
         + `synced=${http.synced ?? http.data?.synced ?? '?'}`,
       );
     } else {
       setBridgeHttp({ state: 'bad', error: http.error });
-      appendLog(`Official1 HTTP FAIL — ${http.error}`);
+      appendLog(`${net.label} HTTP FAIL — ${http.error}`);
     }
 
     if (probeP2pWs) {
       appendLog(
-        `⚠ Probing P2P ${wsUrl} — this burns Official1’s per-IP connect slot (~30s). `
+        `⚠ Probing P2P ${wsUrl} — this burns the bridge per-IP connect slot (~30s). `
         + 'Wait ≥30s before Start full WASM node.',
       );
       const ws = await probeBridgeWs(wsUrl, { protocol: 'binary', timeoutMs: 10000 });
       if (ws.ok) {
         setBridgeWs({ state: 'ok', detail: ws.detail, openedMs: ws.openedMs });
-        appendLog(`Official1 /ws OPEN (${ws.openedMs ?? '?'}ms) — wait 30s before Start`);
+        appendLog(`${net.label} /ws OPEN (${ws.openedMs ?? '?'}ms) — wait 30s before Start`);
       } else {
         setBridgeWs({ state: 'bad', detail: ws.detail });
-        appendLog(`Official1 /ws FAIL — ${ws.detail}`);
+        appendLog(`${net.label} /ws FAIL — ${ws.detail}`);
       }
     } else {
       appendLog(
-        `P2P /ws (${wsUrl}) not auto-probed — protects Official1 handshake slot. `
-        + 'Start full WASM node does the real GRUNT handshake.',
+        `P2P /ws (${wsUrl}) not auto-probed — protects handshake slot. `
+        + `Start full WASM node does the real ${net.gruntConnect} handshake.`,
       );
     }
 
     if (probeStream) {
-      // Optional: RPC event stream (dashboards). Full WASM node does not use this.
-      appendLog(`Probing RPC stream ${OFFICIAL1.wsStream} (optional) …`);
-      const stream = await probeBridgeWs(OFFICIAL1.wsStream, { protocol: null, timeoutMs: 10000 });
+      appendLog(`Probing RPC stream ${net.wsStream} (optional) …`);
+      const stream = await probeBridgeWs(net.wsStream, { protocol: null, timeoutMs: 10000 });
       if (stream.ok) {
         setBridgeStream({ state: 'ok', detail: stream.detail, openedMs: stream.openedMs });
-        appendLog(`Official1 /stream OPEN (${stream.openedMs ?? '?'}ms)`);
+        appendLog(`${net.label} /stream OPEN (${stream.openedMs ?? '?'}ms)`);
       } else {
         setBridgeStream({ state: 'bad', detail: stream.detail });
-        appendLog(`Official1 /stream FAIL (optional) — ${stream.detail}`);
+        appendLog(`${net.label} /stream FAIL (optional) — ${stream.detail}`);
       }
     } else {
       appendLog(
@@ -202,10 +214,9 @@ export default function WasmBrowserNode() {
     }
 
     appendLog(
-      'If Isolation OK + HTTP OK → click Start full WASM node (real GRUNT on /ws). '
-      + 'VPS: journalctl -u warthog-api.service -f | grep -iE \'websocket|webrtc\'',
+      `If Isolation OK + HTTP OK → click Start (${net.label} WASM ${net.versionText}).`,
     );
-  }, [appendLog]);
+  }, [appendLog, networkId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -214,7 +225,10 @@ export default function WasmBrowserNode() {
       setIsolated(isCrossOriginIsolated());
       setSab(hasSharedArrayBuffer());
       setOpfsOk(hasOpfs());
-      const peers = resolveWsPeers();
+      const netId = resolveNodeNetworkId();
+      setNetworkId(netId);
+      persistNodeNetworkId(netId);
+      const peers = resolveWsPeers(window.location.search, netId);
       setWsPeers(peers);
       setPeersInput(peers);
 
@@ -344,14 +358,27 @@ export default function WasmBrowserNode() {
 
   // Refresh local chain.db3 size (after import / clear).
   const refreshLocalDbInfo = useCallback(async () => {
-    const info = await getLocalChainDbInfo();
+    const info = await getLocalChainDbInfo({ subdir: getNodeNetwork(networkId).opfsSubdir });
     setLocalDbInfo(info);
     return info;
-  }, []);
+  }, [networkId]);
 
   useEffect(() => {
     refreshLocalDbInfo();
   }, [refreshLocalDbInfo]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/node/defi/wart-node.js', { cache: 'no-store' });
+        if (!cancelled) setDefiTriadReady(res.ok);
+      } catch {
+        if (!cancelled) setDefiTriadReady(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   /** Healthy run only — storage/memory fatal means not healthy even if workers linger. */
   const nodeHealthy = running && !storageFatal && !memoryFatal;
@@ -362,8 +389,9 @@ export default function WasmBrowserNode() {
   );
 
   const canStart = useMemo(
-    () => isolated && sab && !running && !starting && !stopping && !storageFatal && !clearingOpfs && !snapshotBusy,
-    [isolated, sab, running, starting, stopping, storageFatal, clearingOpfs, snapshotBusy],
+    () => isolated && sab && !running && !starting && !stopping && !storageFatal && !clearingOpfs && !snapshotBusy
+      && (networkId !== 'defi' || defiTriadReady),
+    [isolated, sab, running, starting, stopping, storageFatal, clearingOpfs, snapshotBusy, networkId, defiTriadReady],
   );
 
   /** File/URL import when idle — site one-click needs publicSnapshot (probed). */
@@ -470,54 +498,80 @@ export default function WasmBrowserNode() {
     );
   }, [appendLog]);
 
-  const applyPeers = () => {
-    const v = formatPeerList(peersInput.trim() || DEFAULT_WS_PEERS);
-    setPeersInput(v);
-    setWsPeers(v);
+  const persistPeers = (v) => {
     try {
-      localStorage.setItem('wsPeers', v);
+      localStorage.setItem(peersStorageKey(networkId), v);
+      if (!network.testnet) localStorage.setItem('wsPeers', v);
     } catch {
       // ignore
     }
+  };
+
+  const applyPeers = () => {
+    const v = formatPeerList(peersInput.trim() || defaultWsPeersForNetwork(networkId));
+    setPeersInput(v);
+    setWsPeers(v);
+    persistPeers(v);
     const n = parsePeerList(v).length;
     appendLog(`Bridge peers set → ${n} URL${n === 1 ? '' : 's'}: ${v}`);
     runBridgeProbes(v);
   };
 
-  const useOfficial1 = () => {
-    const v = mainnetPeerPreset();
+  const useNetworkDefaultPeers = () => {
+    const v = defaultWsPeersForNetwork(networkId);
     setPeersInput(v);
     setWsPeers(v);
-    try {
-      localStorage.setItem('wsPeers', v);
-    } catch {
-      // ignore
-    }
-    appendLog(`Reset to mainnet bridge preset → ${v}`);
+    persistPeers(v);
+    appendLog(`Reset to ${network.label} bridge → ${v}`);
     runBridgeProbes(v);
   };
 
-  /** Local Vite proxy — browser only opens ws://this-host/ws-bridge (Node dials Official1). */
+  /** Local Vite proxy — browser only opens same-origin /ws-bridge[-defi]. */
   const useLocalProxy = () => {
-    const url = localDevWsBridgeUrl();
+    const url = defaultWsPeersForNetwork(networkId);
     setPeersInput(url);
     setWsPeers(url);
-    try {
-      localStorage.setItem('wsPeers', url);
-    } catch {
-      // ignore
-    }
+    persistPeers(url);
     appendLog(
       `Using local dev WS proxy → ${url} `
-      + '(requires restarted `npm run dev` with /ws-bridge proxy). '
+      + '(requires restarted `npm run dev` with /ws-bridge or /ws-bridge-defi). '
       + 'Do not Probe /ws on public URL before Start.',
     );
     runBridgeProbes(url, { probeP2pWs: false });
   };
 
+  const selectNetwork = (id) => {
+    if (id === networkId || running || starting || stopping) return;
+    const net = getNodeNetwork(id);
+    setNetworkId(id);
+    persistNodeNetworkId(id);
+    const peers = resolveWsPeers(window.location.search, id);
+    setWsPeers(peers);
+    setPeersInput(peers);
+    setChain(null);
+    setSyncStats(null);
+    setPeerCount(0);
+    setPeers([]);
+    setMempoolCount(0);
+    setMempool([]);
+    heightSamplesRef.current = [];
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set('network', id);
+      window.history.replaceState({}, '', url.toString());
+    } catch {
+      // ignore
+    }
+    appendLog(
+      `Network → ${net.label} (WASM ${net.versionText}, session ${net.session}, GRUNT ${net.gruntConnect})`,
+    );
+    runBridgeProbes(peers, {}, id);
+    getLocalChainDbInfo({ subdir: net.opfsSubdir }).then(setLocalDbInfo).catch(() => {});
+  };
+
   /** Raw open test (no GRUNT) — success = onopen. Uses current peers field. */
   const testRawWs = async () => {
-    const url = (peersInput.trim() || wsPeers || resolveDefaultWsPeers()).split(';')[0].trim();
+    const url = (peersInput.trim() || wsPeers || defaultWsPeersForNetwork(networkId)).split(';')[0].trim();
     appendLog(`Raw WSS open test → ${url} (success = onopen; close after open is OK for bare client)`);
     const result = await probeBridgeWs(url, { protocol: 'binary', timeoutMs: 12000 });
     if (result.ok) {
@@ -624,9 +678,13 @@ export default function WasmBrowserNode() {
     appendLog('Terminating WASM workers, then clearing OPFS…');
     try {
       terminateWasmWorkers(appendLog);
-      const before = await listOpfsEntries();
+      const before = await listOpfsEntries(network.opfsSubdir);
       appendLog(`OPFS before: ${before.length ? before.join(', ') : '(empty)'}`);
-      const result = await clearOpfsStorage({ terminateWorkers: true, log: appendLog });
+      const result = await clearOpfsStorage({
+        terminateWorkers: true,
+        log: appendLog,
+        subdir: network.opfsSubdir,
+      });
       if (result.ok) {
         storageFatalRef.current = false;
         setStorageFatal(false);
@@ -661,7 +719,7 @@ export default function WasmBrowserNode() {
     appendLog('Recover: kill workers → clear OPFS → reload (?resetDb=1)…');
     try {
       // reload:true always navigates away; may not return
-      await recoverOpfsStorage({ reload: true, log: appendLog });
+      await recoverOpfsStorage({ reload: true, log: appendLog, subdir: network.opfsSubdir });
     } catch (err) {
       appendLog(`Recover error: ${err.message || err}`);
       // Force navigation even if helper threw
@@ -716,7 +774,7 @@ export default function WasmBrowserNode() {
     setError(null);
     appendLog(`[snapshot] importing file “${file.name}” (${formatBytes(file.size)})…`);
     try {
-      const result = await importChainDbBlob(file, { log: appendLog });
+      const result = await importChainDbBlob(file, { log: appendLog, subdir: network.opfsSubdir });
       if (!result.ok) {
         setError(result.error || 'Snapshot import failed');
         appendLog(`[snapshot] FAIL — ${result.error}`);
@@ -746,7 +804,7 @@ export default function WasmBrowserNode() {
     setError(null);
     appendLog(`[snapshot] downloading ${url}…`);
     try {
-      const result = await importChainDbFromUrl(url, { log: appendLog });
+      const result = await importChainDbFromUrl(url, { log: appendLog, subdir: network.opfsSubdir });
       if (!result.ok) {
         setError(result.error || 'Snapshot URL import failed');
         appendLog(`[snapshot] FAIL — ${result.error}`);
@@ -810,7 +868,10 @@ export default function WasmBrowserNode() {
         );
       }
 
-      const prep = await prepareOpfsForStart({ forceClear: opfsNeedsReset() });
+      const prep = await prepareOpfsForStart({
+        forceClear: opfsNeedsReset(),
+        subdir: network.opfsSubdir,
+      });
       if (!prep.ok) {
         throw new Error(prep.error || 'OPFS prepare failed');
       }
@@ -822,20 +883,29 @@ export default function WasmBrowserNode() {
       );
 
       appendLog(`Using WS_PEERS=${wsPeers}`);
-      appendLog(`Official1 bridge flags expected: ${OFFICIAL1.flags?.join(' ')}`);
-      appendLog('Booting public/node WASM (expect log: Warthog Node v0.9.6 / Adding websocket peer …)');
+      appendLog(`${network.label} argv: ${network.argv.join(' ')}`);
       appendLog(
-        'Handshake v4: settle ~250ms after open, then C++ sends WARTHOG GRUNT? on the wire '
-        + '(same as CLI tester). Official1: 1 connect/IP (~30s) — do not probe /ws first.',
+        `Booting ${network.glueUrl} (expect log: Warthog Node v${network.versionText} / Adding websocket peer …)`,
       );
       appendLog(
-        'Storage: chain/peers use OPFS (/opfs/*.db3). Only one tab per origin. '
-        + 'If readonly database → Recover (clear + reload), then Start once.',
+        `Handshake v4: settle ~250ms after open, then C++ sends ${network.gruntConnect} on the wire. `
+        + '1 connect/IP (~30s) — do not probe /ws first.',
       );
+      appendLog(
+        `Storage: ${network.session}/*.db3 (separate from ${network.testnet ? 'Official1' : 'DeFi'} OPFS). `
+        + 'Only one tab per origin. If readonly database → Recover, then Start once.',
+      );
+      if (network.testnet && !defiTriadReady) {
+        throw new Error(
+          'DeFi WASM triad is not installed at /node/defi/wart-node.js. '
+          + 'Copy wasm-out/wasm/* from core-wasm-build-0.10.22 after the emscripten build.',
+        );
+      }
       // Brief settle so any prior sockets are fully closed.
       await new Promise((r) => setTimeout(r, 400));
       const moduleConfig = createModuleConfig({
         wsPeers,
+        networkId,
         print: (text) => {
           appendLog(text);
           // WASM throws inside the worker — surface recovery when SQLite fails
@@ -860,6 +930,7 @@ export default function WasmBrowserNode() {
       // Live Module instance only — never assign the constructor config.
       window.wartNode = instance;
       window.Module = instance;
+      window.__wartRunningNetworkId = network.id;
       // If SQLite already failed during init, do not paint healthy "running".
       // (print → handleOpfsReadonly may have fired; state is async — use ref.)
       if (storageFatalRef.current) {
@@ -877,8 +948,7 @@ export default function WasmBrowserNode() {
         setRunning(true);
         setStatus('Full node runtime started — watch peers / chain / console for GRUNT');
         appendLog('Emscripten runtime ready — full node is running in this tab');
-        appendLog('Expect: [ws-handshake] … GRUNT complete · Adding websocket peer …');
-        appendLog('VPS: journalctl -u warthog-api.service -f | grep -iE \'websocket|webrtc\'');
+        appendLog(`Expect: [ws-handshake] … ${network.gruntConnect} complete · Adding websocket peer …`);
       }
     } catch (err) {
       console.error(err);
@@ -1009,12 +1079,39 @@ export default function WasmBrowserNode() {
                   ? 'Toolbar popup — dock to side panel to stay open'
                   : inExtPage
                     ? 'Full node in this tab — keep focused while syncing'
-                    : 'Run a full node in this tab — no install required'}
+                    : network.testnet
+                      ? 'DeFi testnet full node in this tab — separate OPFS from Official1'
+                      : 'Run a full node in this tab — no install required'}
             </p>
           </div>
         </div>
-        <div className={`dash__badge ${badgeClass}`}>{badgeLabel}</div>
+        <div className="dash__header-right">
+          <div className="dash__nets" role="group" aria-label="Network">
+            {NODE_NETWORK_LIST.map((n) => (
+              <button
+                key={n.id}
+                type="button"
+                className={`tab${networkId === n.id ? ' is-on' : ''}`}
+                disabled={running || starting || stopping}
+                onClick={() => selectNetwork(n.id)}
+                title={n.testnet ? `DeFi testnet WASM ${n.versionText}` : `Official1 WASM ${n.versionText}`}
+              >
+                {n.shortLabel}
+              </button>
+            ))}
+          </div>
+          <div className={`dash__badge ${badgeClass}`}>{badgeLabel}</div>
+        </div>
       </header>
+
+      {network.testnet && !defiTriadReady && (
+        <div className="dash__error" style={{ textAlign: 'left' }}>
+          DeFi WASM triad is not at <code className="mono">/node/defi/</code> yet.
+          Finish the 0.10.22 emscripten build, then copy
+          {' '}<code className="mono">wasm-out/wasm/wart-node.*</code> there.
+          Official1 (0.9.6) still works from the network switch.
+        </div>
+      )}
 
       {inExtPopup && (
         <>
@@ -1366,9 +1463,13 @@ export default function WasmBrowserNode() {
           <div className="advanced__section">
             <h3>Public network</h3>
             <p className="muted small" style={{ margin: '0 0 0.5rem' }}>
-              Connected via <strong>{OFFICIAL1.name}</strong>
+              Connected via <strong>{network.label}</strong>
+              {` · WASM ${network.versionText}`}
               {bridgeHttp.state === 'ok' && bridgeHttp.height != null
                 ? ` · network height #${bridgeHttp.height}`
+                : ''}
+              {network.testnet && !defiTriadReady
+                ? ' · DeFi triad not installed yet'
                 : ''}
             </p>
             <div className="status-row">
@@ -1414,7 +1515,7 @@ export default function WasmBrowserNode() {
             )}
             {bridgeWs.state === 'bad' && (
               <div className="dash__error" style={{ marginTop: '0.5rem' }}>
-                Bridge probe failed for <code className="mono">{wsPeers || OFFICIAL1.wsBridge}</code>
+                Bridge probe failed for <code className="mono">{wsPeers || network.wsBridge}</code>
                 {bridgeWs.detail ? ` (${bridgeWs.detail})` : ''}.
                 You can still try Start if the browser is Ready.
               </div>
@@ -1444,15 +1545,15 @@ export default function WasmBrowserNode() {
                 value={peersInput}
                 onChange={(e) => setPeersInput(e.target.value)}
                 disabled={running || starting}
-                placeholder={`${OFFICIAL1.wsBridge};wss://other-bridge/ws`}
+                placeholder={`${network.wsBridge};wss://other-bridge/ws`}
                 aria-label="WebSocket peer URLs"
               />
               <div className="controls__actions">
                 <button type="button" className="btn" onClick={applyPeers} disabled={running || starting}>
                   Save
                 </button>
-                <button type="button" className="btn btn--ghost" onClick={useOfficial1} disabled={running || starting}>
-                  Official1
+                <button type="button" className="btn btn--ghost" onClick={useNetworkDefaultPeers} disabled={running || starting}>
+                  {network.shortLabel} default
                 </button>
                 {isLocalDevHost() && (
                   <button type="button" className="btn btn--ghost" onClick={useLocalProxy} disabled={running || starting}>
@@ -1607,7 +1708,7 @@ export default function WasmBrowserNode() {
               </li>
               <li>
                 Node flags:{' '}
-                <code className="mono">{OFFICIAL1.flags?.join(' ') || '—'}</code>
+                <code className="mono">{network.flags?.join(' ') || '—'}</code>
               </li>
               <li>
                 Nginx: proxy <code className="mono">/ws</code> to localhost with Upgrade + X-Forwarded-For.

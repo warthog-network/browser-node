@@ -13,6 +13,15 @@
   Content-Type: application/wasm
   Cross-Origin-Resource-Policy: same-origin
 
+/node/defi/*
+  Cross-Origin-Resource-Policy: same-origin
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+
+/node/defi/*.wasm
+  Content-Type: application/wasm
+  Cross-Origin-Resource-Policy: same-origin
+
 /_astro/*
   Cross-Origin-Resource-Policy: same-origin
   Cross-Origin-Opener-Policy: same-origin

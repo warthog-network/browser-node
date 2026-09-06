@@ -550,6 +550,23 @@ async function contributeEthOpen(share, open, api) {
   for (const req of open) {
     const id = String(req.ticketId || '');
     if (!id || req.status === 'paid') continue;
+    const kind = String(req.kind || '');
+    if (kind.startsWith('rotate') || id.startsWith('eth-rotate')) {
+      // Rotate sweeps are not WETH burns.
+    } else {
+      try {
+        const { verifyLocalEthBurn } = await import('./localWartChain.js');
+        const local = await verifyLocalEthBurn(req);
+        if (!local.skipped && !local.ok) {
+          const why = (local.reasons || []).join('; ') || 'local burn check failed';
+          console.warn('[eth3p local-burn]', id, why);
+          continue;
+        }
+      } catch (e) {
+        console.warn('[eth3p local-burn]', id, e?.message || e);
+        continue;
+      }
+    }
     try {
       if (role === 2) {
         const zk = await import('./lindellZk.js');
@@ -595,6 +612,14 @@ async function contributeEthOpen(share, open, api) {
       } else if (role === 1) {
         const { clientSignRound1, clientSignFinish } = await import('./pool3pClient.js');
         let t = await poolPost(api, { action: 'eth3p_ticket', ticketId: id });
+        if (t?.wartTxHash && t.wartTxHash !== req.wartTxHash) {
+          const { verifyLocalEthBurn } = await import('./localWartChain.js');
+          const local = await verifyLocalEthBurn({ ...req, ...t });
+          if (!local.skipped && !local.ok) {
+            console.warn('[eth3p local-burn]', id, (local.reasons || []).join('; '));
+            continue;
+          }
+        }
         let k1 = k1ByTicket.get(id);
         const ticketHash = String(t.hashHex || '').replace(/^0x/i, '').toLowerCase();
         const k1Hash = String(k1?.hashHex || '').replace(/^0x/i, '').toLowerCase();
