@@ -172,14 +172,19 @@ export function assertEthBurnTx(flat, {
 
 /**
  * Path A payout / ETH unwrap local checks.
- * Returns { ok, skipped, source, reasons, ... } — skipped if DeFi WASM is down.
+ * Fail-closed: DeFi WASM down is not ok (callers must not sign).
  */
 export async function verifyLocalForPayout({
   poolAddress,
   amountE8,
 } = {}) {
   if (!isLocalDefiNodeLive()) {
-    return { ok: true, skipped: true, source: null };
+    return {
+      ok: false,
+      skipped: true,
+      source: null,
+      reasons: ['DeFi WASM node not running — start the full node to sign'],
+    };
   }
   const reasons = [];
   let head = null;
@@ -210,13 +215,21 @@ export async function verifyLocalForPayout({
 
 export async function verifyLocalEthBurn(ticket) {
   if (!isLocalDefiNodeLive()) {
-    return { ok: true, skipped: true, source: null };
+    return {
+      ok: false,
+      skipped: true,
+      source: null,
+      reasons: ['DeFi WASM node not running — start the full node to sign'],
+    };
   }
   const txHash = ticket?.wartTxHash || ticket?.burnTxHash;
   if (!txHash) {
-    // Coordinator must include wartTxHash on ticketView (deployed frontend).
-    // Do not block signing on older snapshots.
-    return { ok: true, skipped: true, source: 'local-wasm' };
+    return {
+      ok: false,
+      skipped: false,
+      source: 'local-wasm',
+      reasons: ['no wartTxHash — cannot verify burn on local WASM'],
+    };
   }
   try {
     const flat = await lookupLocalTx(txHash);

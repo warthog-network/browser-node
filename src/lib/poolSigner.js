@@ -1700,7 +1700,25 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
     let verify;
     try {
       if (/^wart-pool-rotate-/.test(String(req.ticketId || ''))) {
-        lastVerify = { ok: true, rotationSweep: true, checks: { inspect: true } };
+        const { isLocalDefiNodeLive, verifyLocalForPayout } = await import(
+          './localWartChain.js'
+        );
+        const poolAddress =
+          share.poolAddress || p3?.address || st.signers?.poolAddress;
+        const local = await verifyLocalForPayout({
+          poolAddress,
+          amountE8: req.amountE8,
+        });
+        const wasmOk = isLocalDefiNodeLive() && local.ok && !local.skipped;
+        lastVerify = {
+          ok: wasmOk,
+          rotationSweep: true,
+          checks: { inspect: true, localChain: wasmOk },
+          local,
+          reasons: wasmOk
+            ? []
+            : local.reasons || ['DeFi WASM node not running — start the full node to sign'],
+        };
         verify = lastVerify;
       } else {
         verify = await verifyOpenRequest({
@@ -1721,21 +1739,15 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
       const waitingProof = reasons.some((r) =>
         /waiting for Cartesi notice proof/i.test(r),
       );
-      const authorized =
-        String(verify.inspectTicket?.status || '') === 'authorized' ||
-        !!(verify.checks?.inspectTicket && verify.checks?.notice);
-      // Unpaid authorized ticket: sign. Proof/SPV lag must not skip the room.
-      if (!authorized && !(waitingProof && is3pShare(share))) {
-        results.push({
-          ticketId: req.ticketId,
-          skipped: true,
-          waiting: waitingProof,
-          waitingOn: waitingProof ? 'notice-proof' : undefined,
-          error: reasons.join('; ') || 'verification failed',
-          verify,
-        });
-        continue;
-      }
+      results.push({
+        ticketId: req.ticketId,
+        skipped: true,
+        waiting: waitingProof,
+        waitingOn: waitingProof ? 'notice-proof' : undefined,
+        error: reasons.join('; ') || 'verification failed',
+        verify,
+      });
+      continue;
     }
     try {
       let r;

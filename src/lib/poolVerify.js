@@ -13,14 +13,13 @@ import {
 /**
  * Independent checks a pool signer must pass before handing over a share.
  *
- *   1. Cartesi inspect/pool — machine state + recent release tickets + in-machine SPV
+ *   1. Cartesi inspect/pool — machine state + recent release tickets
  *   2. GraphQL notices — pool_release_ticket + Cartesi output proof
- *   3. Application.validateNotice on L1 (Anvil) — not /api/pool JSON
- *   4. Independent Warthog head — DeFi testnet tip vs the machine light-client tip
+ *   3. Application.validateNotice on L1 — not /api/pool JSON, not inspect "authorized"
+ *   4. This tab's DeFi WASM node — head + pool Q free ≥ ticket (no VPS fallback)
  *
- * The coordinator is not trusted for "this ticket is real." We read rollup
- * outputs and a Warthog node, then compare. Lab-demo tickets skip the notice
- * but still require a live machine + SPV tip.
+ * Inspect "authorized" is not an attestation. Epoch proof + validateNotice is.
+ * WASM down → do not sign. Lab-demo tickets skip the notice.
  */
 
 export const ROLLUP_INSPECT =
@@ -206,14 +205,17 @@ export async function fetchReleaseNotice(ticketId) {
   }
 }
 
-export async function fetchIndependentHead() {
+export async function fetchIndependentHead({ allowVpsFallback = true } = {}) {
   if (isLocalDefiNodeLive()) {
     try {
       const head = await fetchLocalChainHead();
       if (head?.height) return { source: 'local-wasm', ...head };
-    } catch {
+    } catch (e) {
+      if (!allowVpsFallback) throw e;
       /* fall through to VPS — local node may still be catching up */
     }
+  } else if (!allowVpsFallback) {
+    throw new Error('DeFi WASM node not running — start the full node to sign');
   }
   try {
     const j = await fetchJson(WART_HEAD);
@@ -301,9 +303,7 @@ export function evaluateVerification({
   const needProof = requireNotice && ticketNeedsNoticeProof(req?.ticketId, { labDemo: lab });
   if (needProof && checks.notice) {
     if (notice?._noticeProofOk) checks.noticeProof = true;
-    else if (inspectTicket?.status === 'authorized' && checks.inspectTicket) {
-      checks.noticeProof = true;
-    } else if (!notice?._hasProof) {
+    else if (!notice?._hasProof) {
       reasons.push('waiting for Cartesi notice proof (epoch not claimed)');
     } else {
       reasons.push('Cartesi notice proof present but validateNotice has not passed');
@@ -334,19 +334,12 @@ export function evaluateVerification({
     checks.spv = true;
   }
 
-  const authorizedTicket =
-    checks.inspect &&
-    checks.inspectTicket &&
-    checks.notice &&
-    (String(inspectTicket?.status || notice?.status || '') === 'authorized' ||
-      String(inspectTicket?.status || notice?.status || '') === '');
-  // A matching authorized release ticket is the burn attestation.
-  // Do not block Lindell because the machine LC is a few dozen headers behind.
+  // Inspect "authorized" is not a substitute for notice proof or WASM.
+  // Machine SPV lag is informational; Warthog truth is this tab's WASM node.
   const ok =
     checks.inspect &&
     (!requireNotice || checks.notice) &&
-    (!needProof || checks.noticeProof) &&
-    (checks.spv || authorizedTicket);
+    (!needProof || checks.noticeProof);
 
   return {
     ok,
@@ -390,7 +383,12 @@ export function evaluateVerification({
 export async function verifyOpenRequest(req) {
   const inspect = await fetchInspectPool();
   const gql = await fetchReleaseNotice(req.ticketId);
-  const wartHead = await fetchIndependentHead();
+  let wartHead = null;
+  try {
+    wartHead = await fetchIndependentHead({ allowVpsFallback: false });
+  } catch {
+    /* localChain check below records WASM-down / local-head failure */
+  }
   const notice = gql.notice;
   if (
     notice &&
@@ -414,24 +412,22 @@ export async function verifyOpenRequest(req) {
     notice,
     wartHead,
   });
-  if (isLocalDefiNodeLive()) {
-    const local = await verifyLocalForPayout({
-      poolAddress: req.poolAddress,
-      amountE8: req.amountE8,
-    });
-    ev.local = {
-      skipped: local.skipped,
-      source: local.source,
-      freeE8: local.balance?.free?.toString?.() || null,
-    };
-    if (!local.skipped && !local.ok) {
-      ev.ok = false;
-      ev.checks.localChain = false;
-      for (const r of local.reasons || []) {
-        if (!ev.reasons.includes(r)) ev.reasons.push(r);
-      }
-    } else if (!local.skipped) {
-      ev.checks.localChain = true;
+  const local = await verifyLocalForPayout({
+    poolAddress: req.poolAddress,
+    amountE8: req.amountE8,
+  });
+  ev.local = {
+    skipped: local.skipped,
+    source: local.source,
+    freeE8: local.balance?.free?.toString?.() || null,
+  };
+  if (local.ok && !local.skipped) {
+    ev.checks.localChain = true;
+  } else {
+    ev.ok = false;
+    ev.checks.localChain = false;
+    for (const r of local.reasons || []) {
+      if (!ev.reasons.includes(r)) ev.reasons.push(r);
     }
   }
   if (notice && notice._hasProof && !notice._noticeProofOk && ev.checks.notice) {
@@ -447,7 +443,7 @@ export async function verifyOpenRequest(req) {
     sources: {
       inspect: inspect.source,
       notice: gql.source,
-      head: wartHead.source,
+      head: wartHead?.source || null,
     },
     voucherCount: gql.voucherCount || 0,
     attestation: {
@@ -468,7 +464,7 @@ export async function verifyOpenRequest(req) {
       sources: {
         inspect: inspect.source,
         notice: gql.source,
-        head: wartHead.source,
+        head: wartHead?.source || null,
       },
       checkedAt: new Date().toISOString(),
     },
@@ -502,11 +498,13 @@ export function formatVerifyLine(v) {
     v.wartHead?.lag == null ? '' : ` · lag ${v.wartHead.lag}`;
   const localBit = v.checks?.localChain
     ? ' · ✓ local-node'
-    : v.wartHead?.source === 'local-wasm'
-      ? ' · local-head'
-      : v.wartHead?.source === 'defi-head'
-        ? ' · vps-head'
-        : '';
+    : v.local || v.reasons?.some((r) => /WASM node not running|local Q free/i.test(r))
+      ? ' · ✗ local-node'
+      : v.wartHead?.source === 'local-wasm'
+        ? ' · local-head'
+        : v.wartHead?.source === 'defi-head'
+          ? ' · vps-head'
+          : '';
   const h = v.machine?.bestHeight
     ? ` · SPV #${v.machine.bestHeight}/${v.wartHead?.height || '?'}${lag}`
     : '';

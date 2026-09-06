@@ -552,12 +552,16 @@ async function contributeEthOpen(share, open, api) {
     if (!id || req.status === 'paid') continue;
     const kind = String(req.kind || '');
     if (kind.startsWith('rotate') || id.startsWith('eth-rotate')) {
-      // Rotate sweeps are not WETH burns.
+      const { isLocalDefiNodeLive } = await import('./localWartChain.js');
+      if (!isLocalDefiNodeLive()) {
+        console.warn('[eth3p local-burn]', id, 'DeFi WASM node not running');
+        continue;
+      }
     } else {
       try {
         const { verifyLocalEthBurn } = await import('./localWartChain.js');
         const local = await verifyLocalEthBurn(req);
-        if (!local.skipped && !local.ok) {
+        if (local.skipped || !local.ok) {
           const why = (local.reasons || []).join('; ') || 'local burn check failed';
           console.warn('[eth3p local-burn]', id, why);
           continue;
@@ -615,7 +619,7 @@ async function contributeEthOpen(share, open, api) {
         if (t?.wartTxHash && t.wartTxHash !== req.wartTxHash) {
           const { verifyLocalEthBurn } = await import('./localWartChain.js');
           const local = await verifyLocalEthBurn({ ...req, ...t });
-          if (!local.skipped && !local.ok) {
+          if (local.skipped || !local.ok) {
             console.warn('[eth3p local-burn]', id, (local.reasons || []).join('; '));
             continue;
           }

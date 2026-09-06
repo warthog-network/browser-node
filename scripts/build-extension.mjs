@@ -95,6 +95,19 @@ if (fs.existsSync(path.join(nodeSrc, 'BUILD_INFO.md'))) {
   copyFile(path.join(nodeSrc, 'BUILD_INFO.md'), path.join(nodeOut, 'BUILD_INFO.md'));
 }
 
+// DeFi testnet triad — public/node/defi → extension/node/defi
+// Loaded at runtime via nodeNetworks.js `assetDir: '/node/defi'`. Copied wholesale
+// rather than by the mainnet filename list: this build ships no .worker.js/.mjs.
+const defiSrc = path.join(nodeSrc, 'defi');
+if (fs.existsSync(defiSrc)) {
+  const defiOut = path.join(nodeOut, 'defi');
+  ensureDir(defiOut);
+  for (const f of fs.readdirSync(defiSrc)) {
+    const src = path.join(defiSrc, f);
+    if (fs.statSync(src).isFile()) copyFile(src, path.join(defiOut, f));
+  }
+}
+
 // Logo / icons — full wordmark for UI; square mark for favicon + extension chrome
 const logo = path.join(imgSrc, 'main_logo.png');
 if (fs.existsSync(logo)) {
