@@ -517,16 +517,18 @@ function updateMemoryViews() {
     abort("updateMemoryViews: wasmMemory is not set (pthread load race)");
   }
   var b = wasmMemory.buffer;
-  Module["HEAP8"] = HEAP8 = new Int8Array(b);
-  Module["HEAP16"] = HEAP16 = new Int16Array(b);
-  Module["HEAPU8"] = HEAPU8 = new Uint8Array(b);
-  Module["HEAPU16"] = HEAPU16 = new Uint16Array(b);
-  Module["HEAP32"] = HEAP32 = new Int32Array(b);
-  Module["HEAPU32"] = HEAPU32 = new Uint32Array(b);
-  Module["HEAPF32"] = HEAPF32 = new Float32Array(b);
-  Module["HEAPF64"] = HEAPF64 = new Float64Array(b);
-  Module["HEAP64"] = HEAP64 = new BigInt64Array(b);
-  Module["HEAPU64"] = HEAPU64 = new BigUint64Array(b);
+  // Locals only. Module.HEAP* are getters (installLiveHeapExports) so WebRTC
+  // never reads a stale/undefined snapshot after growth.
+  HEAP8 = new Int8Array(b);
+  HEAP16 = new Int16Array(b);
+  HEAPU8 = new Uint8Array(b);
+  HEAPU16 = new Uint16Array(b);
+  HEAP32 = new Int32Array(b);
+  HEAPU32 = new Uint32Array(b);
+  HEAPF32 = new Float32Array(b);
+  HEAPF64 = new Float64Array(b);
+  HEAP64 = new BigInt64Array(b);
+  HEAPU64 = new BigUint64Array(b);
 }
 
 // In non-standalone/normal mode, we create the memory here.
@@ -2358,11 +2360,17 @@ var __wasmfs_opfs_open_blob = async (ctx, fileID, blobIDPtr) => {
 function __wasmfs_opfs_read_access(accessID, bufPtr, len, pos) {
   pos = bigintToI53Checked(pos);
   let accessHandle = wasmfsOPFSAccessHandles.get(accessID);
-  let data = (growMemViews(), HEAPU8).subarray(bufPtr, bufPtr + len);
+  growMemViews();
+  if (!HEAPU8) return -28;
+  // Chrome stable rejects SharedArrayBuffer views on SyncAccessHandle.
+  let data = new Uint8Array(len);
   try {
-    return accessHandle.read(data, {
+    let nread = accessHandle.read(data, {
       at: pos
     });
+    growMemViews();
+    if (nread > 0 && HEAPU8) HEAPU8.set(data.subarray(0, nread), bufPtr);
+    return nread;
   } catch (e) {
     if (e.name == "TypeError") {
       return -28;
@@ -2440,7 +2448,9 @@ async function __wasmfs_opfs_set_size_file(ctx, fileID, size, errPtr) {
 function __wasmfs_opfs_write_access(accessID, bufPtr, len, pos) {
   pos = bigintToI53Checked(pos);
   let accessHandle = wasmfsOPFSAccessHandles.get(accessID);
-  let data = (growMemViews(), HEAPU8).subarray(bufPtr, bufPtr + len);
+  growMemViews();
+  if (!HEAPU8) return -28;
+  let data = new Uint8Array(HEAPU8.subarray(bufPtr, bufPtr + len));
   try {
     return accessHandle.write(data, {
       at: pos
@@ -3089,7 +3099,9 @@ function _rtcCreatePeerConnection(pUrls, pUsernames, pPasswords, nIceServers) {
   if (!window.RTCPeerConnection) return 0;
   var iceServers = [];
   for (var i = 0; i < nIceServers; ++i) {
-    var heap = Module["HEAPU32"];
+    growMemViews();
+    var heap = HEAPU32;
+    if (!heap) return 0;
     var pUrl = heap[pUrls / heap.BYTES_PER_ELEMENT + i];
     var url = UTF8ToString(pUrl);
     var pUsername = heap[pUsernames / heap.BYTES_PER_ELEMENT + i];
@@ -3166,14 +3178,12 @@ function _rtcSendMessage(dc, pBuffer, size) {
   var dataChannel = WEBRTC.dataChannelsMap[dc];
   if (dataChannel.readyState != "open") return -1;
   if (size >= 0) {
-    var heapBytes = new Uint8Array(Module["HEAPU8"].buffer, pBuffer, size);
-    if (heapBytes.buffer instanceof ArrayBuffer) {
-      dataChannel.send(heapBytes);
-    } else {
-      var byteArray = new Uint8Array(new ArrayBuffer(size));
-      byteArray.set(heapBytes);
-      dataChannel.send(byteArray);
-    }
+    growMemViews();
+    if (!HEAPU8) return -1;
+    var heapBytes = HEAPU8.subarray(pBuffer, pBuffer + size);
+    var byteArray = new Uint8Array(size);
+    byteArray.set(heapBytes);
+    dataChannel.send(byteArray);
     return size;
   } else {
     var str = UTF8ToString(pBuffer);
@@ -3257,8 +3267,9 @@ function _rtcSetMessageCallback(dc, messageCallback) {
       var byteArray = new Uint8Array(evt.data);
       var size = byteArray.length;
       var pBuffer = _malloc(size);
-      var heapBytes = new Uint8Array(Module["HEAPU8"].buffer, pBuffer, size);
-      heapBytes.set(byteArray);
+      growMemViews();
+      if (!HEAPU8) return;
+      HEAPU8.subarray(pBuffer, pBuffer + size).set(byteArray);
       getWasmTableEntry(messageCallback)(pBuffer, size, userPointer);
       _free(pBuffer);
     }
@@ -3372,25 +3383,31 @@ PThread.init();
 // Begin JS library exports
 Module["ExitStatus"] = ExitStatus;
 
-Module["HEAP16"] = (growMemViews(), HEAP16);
-
-Module["HEAP32"] = (growMemViews(), HEAP32);
-
-Module["HEAP64"] = (growMemViews(), HEAP64);
-
-Module["HEAP8"] = (growMemViews(), HEAP8);
-
-Module["HEAPF32"] = (growMemViews(), HEAPF32);
-
-Module["HEAPF64"] = (growMemViews(), HEAPF64);
-
-Module["HEAPU16"] = (growMemViews(), HEAPU16);
-
-Module["HEAPU32"] = (growMemViews(), HEAPU32);
-
-Module["HEAPU64"] = (growMemViews(), HEAPU64);
-
-Module["HEAPU8"] = (growMemViews(), HEAPU8);
+function installLiveHeapExports() {
+  var specs = [
+    ["HEAP8", () => HEAP8],
+    ["HEAP16", () => HEAP16],
+    ["HEAPU8", () => HEAPU8],
+    ["HEAPU16", () => HEAPU16],
+    ["HEAP32", () => HEAP32],
+    ["HEAPU32", () => HEAPU32],
+    ["HEAPF32", () => HEAPF32],
+    ["HEAPF64", () => HEAPF64],
+    ["HEAP64", () => HEAP64],
+    ["HEAPU64", () => HEAPU64]
+  ];
+  for (const spec of specs) {
+    Object.defineProperty(Module, spec[0], {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        growMemViews();
+        return spec[1]();
+      }
+    });
+  }
+}
+installLiveHeapExports();
 
 Module["PThread"] = PThread;
 

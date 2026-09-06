@@ -6,9 +6,9 @@ Do **not** mix with Official1 `public/node/` (0.9.6). Different GRUNT
 (`TESTNET GRUNT?` vs `WARTHOG GRUNT?`), different DB schema, `--testnet`.
 
 Stock emsdk 5.0.7 glue crashes Chrome/Brave stable pthreads (`undefined.buffer`
-in `growMemViews`). After copy, always run `scripts/patch-defi-glue.mjs`.
-The website loader also imports this file directly (no blob) so workers share
-the same script URL.
+in `growMemViews` / WebRTC `Module.HEAPU8.buffer` after growth). After copy,
+always run `scripts/patch-defi-glue.mjs`. The website loader imports this file
+directly (no blob) so workers share the same script URL.
 
 | Field | Value |
 |-------|--------|

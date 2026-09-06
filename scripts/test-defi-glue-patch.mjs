@@ -23,6 +23,12 @@ if (defi.includes('if (wasmMemory.buffer != HEAP8.buffer)')) {
 if (defi.includes('createWasm();\n        run();')) {
   throw new Error('DeFi glue still calls createWasm() without awaiting');
 }
+if (defi.includes('Module["HEAPU8"].buffer')) {
+  throw new Error('DeFi glue still uses Module["HEAPU8"].buffer (WebRTC)');
+}
+if (!defi.includes('installLiveHeapExports')) {
+  throw new Error('DeFi glue missing live HEAP getters');
+}
 if (patchEmscriptenPthreadGlue(official) !== official) {
   throw new Error('Official1 glue must not be rewritten');
 }
