@@ -552,15 +552,28 @@ async function contributeEthOpen(share, open, api) {
     if (!id || req.status === 'paid') continue;
     const kind = String(req.kind || '');
     if (kind.startsWith('rotate') || id.startsWith('eth-rotate')) {
-      const { isLocalDefiNodeLive } = await import('./localWartChain.js');
-      if (!isLocalDefiNodeLive()) {
-        console.warn('[eth3p local-burn]', id, 'DeFi WASM node not running');
+      const { verifyLocalForPayout } = await import('./localWartChain.js');
+      const { fetchInspectPool } = await import('./poolVerify.js');
+      const inspect = await fetchInspectPool().catch(() => null);
+      const local = await verifyLocalForPayout({
+        amountE8: req.amountE8,
+        poolAddress: req.poolAddress || st?.address,
+        spv: inspect?.pool?.spv,
+      });
+      if (local.skipped || !local.ok) {
+        console.warn(
+          '[eth3p local-burn]',
+          id,
+          (local.reasons || []).join('; ') || 'local WASM/SPV check failed',
+        );
         continue;
       }
     } else {
       try {
         const { verifyLocalEthBurn } = await import('./localWartChain.js');
-        const local = await verifyLocalEthBurn(req);
+        const { fetchInspectPool } = await import('./poolVerify.js');
+        const inspect = await fetchInspectPool().catch(() => null);
+        const local = await verifyLocalEthBurn(req, { spv: inspect?.pool?.spv });
         if (local.skipped || !local.ok) {
           const why = (local.reasons || []).join('; ') || 'local burn check failed';
           console.warn('[eth3p local-burn]', id, why);
@@ -618,7 +631,12 @@ async function contributeEthOpen(share, open, api) {
         let t = await poolPost(api, { action: 'eth3p_ticket', ticketId: id });
         if (t?.wartTxHash && t.wartTxHash !== req.wartTxHash) {
           const { verifyLocalEthBurn } = await import('./localWartChain.js');
-          const local = await verifyLocalEthBurn({ ...req, ...t });
+          const { fetchInspectPool } = await import('./poolVerify.js');
+          const inspect = await fetchInspectPool().catch(() => null);
+          const local = await verifyLocalEthBurn(
+            { ...req, ...t },
+            { spv: inspect?.pool?.spv },
+          );
           if (local.skipped || !local.ok) {
             console.warn('[eth3p local-burn]', id, (local.reasons || []).join('; '));
             continue;

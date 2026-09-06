@@ -1680,7 +1680,9 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
   });
   const results = [];
   let lastVerify = null;
-  const { verifyOpenRequest, probeMachineHealth } = await import('./poolVerify.js');
+  const { verifyOpenRequest, probeMachineHealth, fetchInspectPool } = await import(
+    './poolVerify.js'
+  );
   if (actionable.length === 0) {
     try {
       lastVerify = await probeMachineHealth();
@@ -1705,9 +1707,11 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
         );
         const poolAddress =
           share.poolAddress || p3?.address || st.signers?.poolAddress;
+        const inspect = await fetchInspectPool().catch(() => null);
         const local = await verifyLocalForPayout({
           poolAddress,
           amountE8: req.amountE8,
+          spv: inspect?.pool?.spv,
         });
         const wasmOk = isLocalDefiNodeLive() && local.ok && !local.skipped;
         lastVerify = {

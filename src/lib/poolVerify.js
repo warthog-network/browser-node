@@ -16,10 +16,10 @@ import {
  *   1. Cartesi inspect/pool — machine state + recent release tickets
  *   2. GraphQL notices — pool_release_ticket + Cartesi output proof
  *   3. Application.validateNotice on L1 — not /api/pool JSON, not inspect "authorized"
- *   4. This tab's DeFi WASM node — head + pool Q free ≥ ticket (no VPS fallback)
+ *   4. This tab's DeFi WASM node — synced, SPV tip is an ancestor, Q free ≥ ticket
  *
  * Inspect "authorized" is not an attestation. Epoch proof + validateNotice is.
- * WASM down → do not sign. Lab-demo tickets skip the notice.
+ * WASM down / unsynced / fork vs SPV → do not sign. Lab-demo tickets skip the notice.
  */
 
 export const ROLLUP_INSPECT =
@@ -415,14 +415,18 @@ export async function verifyOpenRequest(req) {
   const local = await verifyLocalForPayout({
     poolAddress: req.poolAddress,
     amountE8: req.amountE8,
+    spv: inspect.pool?.spv,
   });
   ev.local = {
     skipped: local.skipped,
     source: local.source,
     freeE8: local.balance?.free?.toString?.() || null,
+    ancestry: local.ancestry || null,
+    synced: local.head?.synced ?? null,
   };
   if (local.ok && !local.skipped) {
     ev.checks.localChain = true;
+    if (local.ancestry) ev.checks.spv = true;
   } else {
     ev.ok = false;
     ev.checks.localChain = false;
@@ -498,7 +502,12 @@ export function formatVerifyLine(v) {
     v.wartHead?.lag == null ? '' : ` · lag ${v.wartHead.lag}`;
   const localBit = v.checks?.localChain
     ? ' · ✓ local-node'
-    : v.local || v.reasons?.some((r) => /WASM node not running|local Q free/i.test(r))
+    : v.local ||
+        v.reasons?.some((r) =>
+          /WASM node not running|local Q free|not synced|SPV tip|local hash at SPV|local WASM height/i.test(
+            r,
+          ),
+        )
       ? ' · ✗ local-node'
       : v.wartHead?.source === 'local-wasm'
         ? ' · local-head'

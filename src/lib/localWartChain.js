@@ -101,6 +101,75 @@ export async function fetchLocalChainHead() {
   };
 }
 
+function normHash(h) {
+  return String(h || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+}
+
+export function isExplicitlyUnsynced(v) {
+  if (v === false || v === 0 || v === '0') return true;
+  if (typeof v === 'string' && v.toLowerCase() === 'false') return true;
+  return false;
+}
+
+/** Local canonical hash at height — used to prove SPV tip is an ancestor. */
+export async function fetchLocalBlockHash(height) {
+  const h = Number(height);
+  if (!Number.isFinite(h) || h <= 0) throw new Error('block height required');
+  const data = unwrapRpc(await rpcGet(`/chain/block/${h}/hash`));
+  const hash = normHash(data?.hash || data?.header?.hash);
+  if (!hash) throw new Error(`local block ${h} has no hash`);
+  return hash;
+}
+
+/**
+ * Local WASM must be at/after the machine SPV tip, on the same chain:
+ * hash(local, spv.bestHeight) === spv.bestHash.
+ */
+export async function assertLocalAncestorOfSpv(head, spv) {
+  if (!spv?.bootstrapped) {
+    throw new Error('in-machine SPV is not bootstrapped');
+  }
+  const spvH = Number(spv.bestHeight || 0);
+  const spvHash = normHash(spv.bestHash);
+  if (!spvH || !spvHash) throw new Error('in-machine SPV has no tip');
+  const localH = Number(head?.height || 0);
+  if (localH < spvH) {
+    throw new Error(`local WASM height ${localH} < SPV tip ${spvH}`);
+  }
+  const atSpv = await fetchLocalBlockHash(spvH);
+  if (atSpv !== spvHash) {
+    throw new Error(
+      `local hash at SPV #${spvH} ${atSpv.slice(0, 12)}… ≠ SPV ${spvHash.slice(0, 12)}…`,
+    );
+  }
+  return {
+    localHeight: localH,
+    spvHeight: spvH,
+    ancestorHash: atSpv,
+  };
+}
+
+async function requireSyncedAncestor(spv) {
+  const head = await fetchLocalChainHead();
+  const reasons = [];
+  if (isExplicitlyUnsynced(head.synced)) {
+    reasons.push('local WASM is not synced');
+  }
+  let ancestry = null;
+  if (!spv) {
+    reasons.push('SPV tip missing — cannot check local ancestry');
+  } else {
+    try {
+      ancestry = await assertLocalAncestorOfSpv(head, spv);
+    } catch (e) {
+      reasons.push(e?.message || String(e));
+    }
+  }
+  return { head, ancestry, reasons };
+}
+
 export async function lookupLocalTx(txHash) {
   const h = String(txHash || '')
     .replace(/^0x/i, '')
@@ -177,6 +246,7 @@ export function assertEthBurnTx(flat, {
 export async function verifyLocalForPayout({
   poolAddress,
   amountE8,
+  spv,
 } = {}) {
   if (!isLocalDefiNodeLive()) {
     return {
@@ -186,11 +256,15 @@ export async function verifyLocalForPayout({
       reasons: ['DeFi WASM node not running — start the full node to sign'],
     };
   }
-  const reasons = [];
   let head = null;
+  let ancestry = null;
   let balance = null;
+  const reasons = [];
   try {
-    head = await fetchLocalChainHead();
+    const gate = await requireSyncedAncestor(spv);
+    head = gate.head;
+    ancestry = gate.ancestry;
+    reasons.push(...gate.reasons);
   } catch (e) {
     reasons.push(e?.message || String(e));
     return { ok: false, skipped: false, source: 'local-wasm', reasons, head };
@@ -209,17 +283,43 @@ export async function verifyLocalForPayout({
     source: 'local-wasm',
     reasons,
     head,
+    ancestry,
     balance,
   };
 }
 
-export async function verifyLocalEthBurn(ticket) {
+export async function verifyLocalEthBurn(ticket, { spv } = {}) {
   if (!isLocalDefiNodeLive()) {
     return {
       ok: false,
       skipped: true,
       source: null,
       reasons: ['DeFi WASM node not running — start the full node to sign'],
+    };
+  }
+  let head = null;
+  let ancestry = null;
+  try {
+    const gate = await requireSyncedAncestor(spv);
+    head = gate.head;
+    ancestry = gate.ancestry;
+    if (gate.reasons.length) {
+      return {
+        ok: false,
+        skipped: false,
+        source: 'local-wasm',
+        reasons: gate.reasons,
+        head,
+        ancestry,
+      };
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      skipped: false,
+      source: 'local-wasm',
+      reasons: [e?.message || String(e)],
+      head,
     };
   }
   const txHash = ticket?.wartTxHash || ticket?.burnTxHash;
@@ -229,6 +329,8 @@ export async function verifyLocalEthBurn(ticket) {
       skipped: false,
       source: 'local-wasm',
       reasons: ['no wartTxHash — cannot verify burn on local WASM'],
+      head,
+      ancestry,
     };
   }
   try {
@@ -238,13 +340,15 @@ export async function verifyLocalEthBurn(ticket) {
       burnerWart: ticket.burnerWart,
       assetHash: ticket.assetHash,
     });
-    return { ok: true, skipped: false, source: 'local-wasm', tx: flat };
+    return { ok: true, skipped: false, source: 'local-wasm', tx: flat, head, ancestry };
   } catch (e) {
     return {
       ok: false,
       skipped: false,
       source: 'local-wasm',
       reasons: [e?.message || String(e)],
+      head,
+      ancestry,
     };
   }
 }
