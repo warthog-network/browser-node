@@ -2136,6 +2136,18 @@ function wasmfsOPFSRefreshHandle(accessHandle) {
   } catch (_) {}
 }
 
+async function wasmfsOPFSRefreshRoot() {
+  try {
+    var root = await navigator.storage.getDirectory();
+    if (wasmfsOPFSDirectoryHandles.allocated.length > 1) {
+      wasmfsOPFSDirectoryHandles.allocated[1] = root;
+    }
+    return root;
+  } catch (_) {
+    return null;
+  }
+}
+
 var __wasmfs_opfs_close_access = async (ctx, accessID, errPtr) => {
   let accessHandle = wasmfsOPFSAccessHandles.get(accessID);
   try {
@@ -2202,6 +2214,22 @@ var wasmfsOPFSGetOrCreateFile = async (parent, name, create) => {
     if (e.name === "TypeMismatchError") {
       return -31;
     }
+    if (wasmfsOPFSIsStaleHandle(e)) {
+      if (parent === 1) await wasmfsOPFSRefreshRoot();
+      parentHandle = wasmfsOPFSDirectoryHandles.get(parent);
+      try {
+        fileHandle = await parentHandle.getFileHandle(name, {
+          create
+        });
+      } catch (e2) {
+        if (e2.name === "NotFoundError") return -20;
+        if (e2.name === "TypeMismatchError") return -31;
+        if (wasmfsOPFSIsStaleHandle(e2)) return -11;
+        err("unexpected error:", e2, e2.stack);
+        return -29;
+      }
+      return wasmfsOPFSFileHandles.allocate(fileHandle);
+    }
     err("unexpected error:", e, e.stack);
     return -29;
   }
@@ -2221,6 +2249,22 @@ var wasmfsOPFSGetOrCreateDir = async (parent, name, create) => {
     }
     if (e.name === "TypeMismatchError") {
       return -54;
+    }
+    if (wasmfsOPFSIsStaleHandle(e)) {
+      if (parent === 1) await wasmfsOPFSRefreshRoot();
+      parentHandle = wasmfsOPFSDirectoryHandles.get(parent);
+      try {
+        childHandle = await parentHandle.getDirectoryHandle(name, {
+          create
+        });
+      } catch (e2) {
+        if (e2.name === "NotFoundError") return -20;
+        if (e2.name === "TypeMismatchError") return -54;
+        if (wasmfsOPFSIsStaleHandle(e2)) return -11;
+        err("unexpected error:", e2, e2.stack);
+        return -29;
+      }
+      return wasmfsOPFSDirectoryHandles.allocate(childHandle);
     }
     err("unexpected error:", e, e.stack);
     return -29;

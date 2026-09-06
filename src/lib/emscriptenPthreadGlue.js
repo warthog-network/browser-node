@@ -274,6 +274,142 @@ function wasmfsOPFSRefreshHandle(accessHandle) {
   } catch (_) {}
 }`;
 
+const OPFS_HELPER_STALE = `function wasmfsOPFSRefreshHandle(accessHandle) {
+  try {
+    accessHandle.getSize();
+  } catch (_) {}
+}`;
+
+const OPFS_HELPER_ROOT = `function wasmfsOPFSRefreshHandle(accessHandle) {
+  try {
+    accessHandle.getSize();
+  } catch (_) {}
+}
+
+async function wasmfsOPFSRefreshRoot() {
+  try {
+    var root = await navigator.storage.getDirectory();
+    if (wasmfsOPFSDirectoryHandles.allocated.length > 1) {
+      wasmfsOPFSDirectoryHandles.allocated[1] = root;
+    }
+    return root;
+  } catch (_) {
+    return null;
+  }
+}`;
+
+const OPFS_GETFILE_OLD = `var wasmfsOPFSGetOrCreateFile = async (parent, name, create) => {
+  let parentHandle = wasmfsOPFSDirectoryHandles.get(parent);
+  let fileHandle;
+  try {
+    fileHandle = await parentHandle.getFileHandle(name, {
+      create
+    });
+  } catch (e) {
+    if (e.name === "NotFoundError") {
+      return -20;
+    }
+    if (e.name === "TypeMismatchError") {
+      return -31;
+    }
+    err("unexpected error:", e, e.stack);
+    return -29;
+  }
+  return wasmfsOPFSFileHandles.allocate(fileHandle);
+};`;
+
+const OPFS_GETFILE_NEW = `var wasmfsOPFSGetOrCreateFile = async (parent, name, create) => {
+  let parentHandle = wasmfsOPFSDirectoryHandles.get(parent);
+  let fileHandle;
+  try {
+    fileHandle = await parentHandle.getFileHandle(name, {
+      create
+    });
+  } catch (e) {
+    if (e.name === "NotFoundError") {
+      return -20;
+    }
+    if (e.name === "TypeMismatchError") {
+      return -31;
+    }
+    if (wasmfsOPFSIsStaleHandle(e)) {
+      if (parent === 1) await wasmfsOPFSRefreshRoot();
+      parentHandle = wasmfsOPFSDirectoryHandles.get(parent);
+      try {
+        fileHandle = await parentHandle.getFileHandle(name, {
+          create
+        });
+      } catch (e2) {
+        if (e2.name === "NotFoundError") return -20;
+        if (e2.name === "TypeMismatchError") return -31;
+        if (wasmfsOPFSIsStaleHandle(e2)) return -11;
+        err("unexpected error:", e2, e2.stack);
+        return -29;
+      }
+      return wasmfsOPFSFileHandles.allocate(fileHandle);
+    }
+    err("unexpected error:", e, e.stack);
+    return -29;
+  }
+  return wasmfsOPFSFileHandles.allocate(fileHandle);
+};`;
+
+const OPFS_GETDIR_OLD = `var wasmfsOPFSGetOrCreateDir = async (parent, name, create) => {
+  let parentHandle = wasmfsOPFSDirectoryHandles.get(parent);
+  let childHandle;
+  try {
+    childHandle = await parentHandle.getDirectoryHandle(name, {
+      create
+    });
+  } catch (e) {
+    if (e.name === "NotFoundError") {
+      return -20;
+    }
+    if (e.name === "TypeMismatchError") {
+      return -54;
+    }
+    err("unexpected error:", e, e.stack);
+    return -29;
+  }
+  return wasmfsOPFSDirectoryHandles.allocate(childHandle);
+};`;
+
+const OPFS_GETDIR_NEW = `var wasmfsOPFSGetOrCreateDir = async (parent, name, create) => {
+  let parentHandle = wasmfsOPFSDirectoryHandles.get(parent);
+  let childHandle;
+  try {
+    childHandle = await parentHandle.getDirectoryHandle(name, {
+      create
+    });
+  } catch (e) {
+    if (e.name === "NotFoundError") {
+      return -20;
+    }
+    if (e.name === "TypeMismatchError") {
+      return -54;
+    }
+    if (wasmfsOPFSIsStaleHandle(e)) {
+      if (parent === 1) await wasmfsOPFSRefreshRoot();
+      parentHandle = wasmfsOPFSDirectoryHandles.get(parent);
+      try {
+        childHandle = await parentHandle.getDirectoryHandle(name, {
+          create
+        });
+      } catch (e2) {
+        if (e2.name === "NotFoundError") return -20;
+        if (e2.name === "TypeMismatchError") return -54;
+        if (wasmfsOPFSIsStaleHandle(e2)) return -11;
+        err("unexpected error:", e2, e2.stack);
+        return -29;
+      }
+      return wasmfsOPFSDirectoryHandles.allocate(childHandle);
+    }
+    err("unexpected error:", e, e.stack);
+    return -29;
+  }
+  return wasmfsOPFSDirectoryHandles.allocate(childHandle);
+};`;
+
 const OPFS_READ_RETRY = `function __wasmfs_opfs_read_access(accessID, bufPtr, len, pos) {
   pos = bigintToI53Checked(pos);
   let accessHandle = wasmfsOPFSAccessHandles.get(accessID);
@@ -436,6 +572,9 @@ export function patchEmscriptenPthreadGlue(source) {
   out = replaceOnce(out, OPFS_WRITE_NEW, OPFS_WRITE_RETRY);
   out = replaceOnce(out, OPFS_FLUSH_OLD, OPFS_FLUSH_NEW);
   out = replaceOnce(out, OPFS_GETSIZE_OLD, OPFS_GETSIZE_NEW);
+  out = replaceOnce(out, OPFS_HELPER_STALE, OPFS_HELPER_ROOT);
+  out = replaceOnce(out, OPFS_GETFILE_OLD, OPFS_GETFILE_NEW);
+  out = replaceOnce(out, OPFS_GETDIR_OLD, OPFS_GETDIR_NEW);
   return out;
 }
 
@@ -445,5 +584,6 @@ export function pthreadGluePatchApplied(source) {
     && s.includes('pthread load: wasmMemory missing from main thread')
     && s.includes('installLiveHeapExports')
     && s.includes('Chrome stable rejects SharedArrayBuffer views')
-    && s.includes('wasmfsOPFSIsStaleHandle');
+    && s.includes('wasmfsOPFSIsStaleHandle')
+    && s.includes('wasmfsOPFSRefreshRoot');
 }

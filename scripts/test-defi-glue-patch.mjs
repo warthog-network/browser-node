@@ -32,6 +32,9 @@ if (!defi.includes('installLiveHeapExports')) {
 if (!defi.includes('wasmfsOPFSIsStaleHandle')) {
   throw new Error('DeFi glue missing OPFS InvalidStateError retry');
 }
+if (!defi.includes('wasmfsOPFSRefreshRoot')) {
+  throw new Error('DeFi glue missing OPFS root-handle refresh');
+}
 if (patchEmscriptenPthreadGlue(official) !== official) {
   throw new Error('Official1 glue must not be rewritten');
 }

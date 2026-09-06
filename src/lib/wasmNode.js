@@ -905,6 +905,33 @@ export function installLocalBridgeWsRewrite(targetWssUrl, log) {
  * Dynamically load the modularized Emscripten factory and start the node.
  * @returns {Promise<object>} runtime Module instance (await the ready promise)
  */
+/**
+ * Chrome/Brave stable can throw InvalidStateError on a cached OPFS
+ * DirectoryHandle. Official1 uses session `/opfs` (already the mount).
+ * DeFi mkdir `/opfs/defi` hits that bug — create it from a fresh root first.
+ */
+export async function ensureOpfsSessionDir(subdir, log) {
+  if (!subdir) return;
+  if (typeof navigator === 'undefined' || !navigator.storage?.getDirectory) return;
+  let lastErr;
+  for (let i = 0; i < 4; i++) {
+    try {
+      const root = await navigator.storage.getDirectory();
+      await root.getDirectoryHandle(subdir, { create: true });
+      log?.(`[opfs] session dir /${subdir} ready`);
+      return;
+    } catch (e) {
+      lastErr = e;
+      const stale = e?.name === 'InvalidStateError'
+        || /state cached in an interface object/i.test(String(e?.message || e));
+      if (!stale) throw e;
+      log?.(`[opfs] session dir retry ${i + 1}: ${e?.message || e}`);
+      await new Promise((r) => setTimeout(r, 80 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 export async function startWasmNode(moduleConfig) {
   if (!isCrossOriginIsolated()) {
     throw new Error(
@@ -914,6 +941,11 @@ export async function startWasmNode(moduleConfig) {
   }
   if (!hasSharedArrayBuffer()) {
     throw new Error('SharedArrayBuffer is not available in this browser/context.');
+  }
+
+  const net = getNodeNetwork(moduleConfig?.__networkId || DEFAULT_NODE_NETWORK_ID);
+  if (net.opfsSubdir) {
+    await ensureOpfsSessionDir(net.opfsSubdir, moduleConfig?.print);
   }
 
   const target = moduleConfig?.__wsPeers || DEFAULT_WS_PEERS;
