@@ -117,8 +117,21 @@ export function extractWartHead(j) {
   };
 }
 
+/** One hung inspect/GraphQL/rpc call must not stall the signer poll loop. */
+export const FETCH_TIMEOUT_MS = 20000;
+
 async function fetchJson(url, init) {
-  const res = await fetch(url, { cache: 'no-store', ...init });
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(url, { cache: 'no-store', ...init, signal: ctl.signal });
+  } catch (e) {
+    const why = e?.name === 'AbortError' ? `timeout after ${FETCH_TIMEOUT_MS}ms` : e?.message || String(e);
+    throw new Error(`${url}: ${why}`);
+  } finally {
+    clearTimeout(timer);
+  }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `${url} HTTP ${res.status}`);
   return body;
@@ -236,12 +249,16 @@ export async function fetchReleaseNotice(ticketId) {
       }
     }
     return { source: 'rollup-graphql', notice: best, voucherCount };
-  } catch {
+  } catch (e) {
+    // Keep the GraphQL failure: a snapshot notice without its epoch proof
+    // otherwise reads as "epoch not claimed" when the real fault is the fetch.
+    const gqlError = e?.message || String(e);
     const snap = await fetchJson(`${VERIFY_SNAPSHOT}${encodeURIComponent(id)}`);
     return {
       source: 'pool-snapshot',
       notice: snap.notice || null,
       voucherCount: Number(snap.voucherCount || 0),
+      gqlError,
     };
   }
 }
@@ -467,6 +484,9 @@ export async function verifyOpenRequest(req) {
     notice,
     wartHead,
   });
+  if (gql.gqlError && notice && !notice._hasProof) {
+    ev.reasons.unshift(`rollup GraphQL failed — ${gql.gqlError}`);
+  }
   const local = await verifyLocalForPayout({
     poolAddress: req.poolAddress,
     amountE8: req.amountE8,
@@ -523,6 +543,7 @@ export async function verifyOpenRequest(req) {
       notice: gql.source,
       head: wartHead?.source || null,
     },
+    gqlError: gql.gqlError || null,
     voucherCount: gql.voucherCount || 0,
     attestation: {
       ticketId: req.ticketId,

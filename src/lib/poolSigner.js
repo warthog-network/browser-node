@@ -177,16 +177,33 @@ export async function getOrCreateSignerId() {
   return id;
 }
 
+const POOL_FETCH_TIMEOUT_MS = 20000;
+
+async function fetchWithTimeout(url, init) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), POOL_FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: ctl.signal });
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      throw new Error(`coordinator timeout after ${POOL_FETCH_TIMEOUT_MS}ms`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function poolGet(api, qs) {
   const url = `${api}${api.includes('?') ? '&' : '?'}${qs}`;
-  const res = await fetch(url, { cache: 'no-store' });
+  const res = await fetchWithTimeout(url, { cache: 'no-store' });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `GET ${res.status}`);
   return body;
 }
 
 async function poolPost(api, body) {
-  const res = await fetch(api, {
+  const res = await fetchWithTimeout(api, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
@@ -194,6 +211,40 @@ async function poolPost(api, body) {
   const j = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(j.error || `POST ${res.status}`);
   return j;
+}
+
+/**
+ * Tell the coordinator why this tab is not signing a room. Verify failures
+ * were client-only: the VPS journal showed hours of wait_r1 with no reason.
+ */
+const skipReported = new Map();
+const SKIP_REPORT_MS = 60000;
+
+async function reportSkip(api, share, req, verify) {
+  const reasons = (verify?.reasons || []).map((r) => String(r).slice(0, 160)).slice(0, 6);
+  const key = `${req.ticketId}|${reasons.join(';')}`;
+  const now = Date.now();
+  if (now - (skipReported.get(key) || 0) < SKIP_REPORT_MS) return;
+  skipReported.set(key, now);
+  let network = null;
+  try {
+    network = window.__wartRunningNetworkId || null;
+  } catch {
+    /* */
+  }
+  await poolPost(api, {
+    action: 'pool3p_skip',
+    signerId: share?.signerId,
+    role: Number(share?.role || 0),
+    ticketId: req.ticketId,
+    reasons,
+    checks: verify?.checks || null,
+    sources: verify?.sources || null,
+    local: verify?.local || null,
+    gqlError: verify?.gqlError || null,
+    network,
+    client: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
+  }).catch(() => null);
 }
 
 async function withRetry(fn, { tries = 3, delayMs = 400 } = {}) {
@@ -1778,6 +1829,7 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
         error: reasons.join('; ') || 'verification failed',
         verify,
       });
+      if (is3pShare(share)) await reportSkip(api, share, req, verify);
       continue;
     }
     try {
