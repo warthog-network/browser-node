@@ -113,6 +113,9 @@ export function isExplicitlyUnsynced(v) {
   return false;
 }
 
+export const SPV_HEADER_WINDOW = 32;
+export const SPV_TX_WINDOW = 32;
+
 /** Local canonical hash at height — used to prove SPV tip is an ancestor. */
 export async function fetchLocalBlockHash(height) {
   const h = Number(height);
@@ -123,9 +126,55 @@ export async function fetchLocalBlockHash(height) {
   return hash;
 }
 
+export async function fetchLocalBlockHeader(height) {
+  const h = Number(height);
+  if (!Number.isFinite(h) || h <= 0) throw new Error('block height required');
+  const data = unwrapRpc(await rpcGet(`/chain/block/${h}/header`));
+  const hdr = data?.header || data;
+  return {
+    height: Number(hdr.height ?? h),
+    hash: normHash(hdr.hash),
+    prevHash: normHash(hdr.prevHash),
+    merkleroot: normHash(hdr.merkleroot || hdr.merkleRoot),
+  };
+}
+
+/** Reward + transfer hashes in a block (newest-block walk uses this). */
+export async function fetchLocalBlockTxHashes(height) {
+  const h = Number(height);
+  const data = unwrapRpc(await rpcGet(`/chain/block/${h}`));
+  const body = data?.body || data;
+  const rows = [
+    ...(body.rewards || []),
+    ...(body.transfers || []),
+    ...(body.transactions || []),
+  ];
+  const out = [];
+  for (const row of rows) {
+    const tx = normHash(row.txHash || row.hash);
+    if (tx) out.push(tx);
+  }
+  return out;
+}
+
+async function matchAnchor(label, height, hash) {
+  const h = Number(height);
+  const want = normHash(hash);
+  if (!h || !want) return null;
+  const local = await fetchLocalBlockHash(h);
+  if (local !== want) {
+    throw new Error(
+      `${label} #${h} local ${local.slice(0, 12)}… ≠ ${want.slice(0, 12)}…`,
+    );
+  }
+  return { label, height: h, hash: local };
+}
+
 /**
- * Local WASM must be at/after the machine SPV tip, on the same chain:
- * hash(local, spv.bestHeight) === spv.bestHash.
+ * Local WASM must be synced onto the same chain as the machine SPV:
+ * tip/checkpoint/pin hashes equal, then a window of headers (hash +
+ * merkelroot = that block's txs) and the last N local tx hashes from
+ * those blocks.
  */
 export async function assertLocalAncestorOfSpv(head, spv) {
   if (!spv?.bootstrapped) {
@@ -138,16 +187,64 @@ export async function assertLocalAncestorOfSpv(head, spv) {
   if (localH < spvH) {
     throw new Error(`local WASM height ${localH} < SPV tip ${spvH}`);
   }
-  const atSpv = await fetchLocalBlockHash(spvH);
-  if (atSpv !== spvHash) {
-    throw new Error(
-      `local hash at SPV #${spvH} ${atSpv.slice(0, 12)}… ≠ SPV ${spvHash.slice(0, 12)}…`,
-    );
+
+  const matched = [];
+  matched.push(await matchAnchor('SPV tip', spvH, spvHash));
+  const ck = await matchAnchor(
+    'SPV checkpoint',
+    spv.checkpointHeight,
+    spv.checkpointHash,
+  );
+  if (ck) matched.push(ck);
+  const pin = await matchAnchor('SPV pin', spv.pinHeight, spv.pinHash);
+  if (pin) matched.push(pin);
+
+  const window = Array.isArray(spv.recentHeaders) ? spv.recentHeaders : [];
+  const txWindow = [];
+  if (window.length) {
+    let prev = null;
+    for (const row of window) {
+      const height = Number(row.height);
+      const hdr = await fetchLocalBlockHeader(height);
+      if (!hdr.hash) throw new Error(`local header missing at #${height}`);
+      if (normHash(row.hash) && hdr.hash !== normHash(row.hash)) {
+        throw new Error(
+          `SPV window hash #${height} ${hdr.hash.slice(0, 12)}… ≠ ${normHash(row.hash).slice(0, 12)}…`,
+        );
+      }
+      if (row.merkleroot && hdr.merkleroot && hdr.merkleroot !== normHash(row.merkleroot)) {
+        throw new Error(
+          `SPV window txs/merkle #${height} mismatch`,
+        );
+      }
+      if (row.prevHash && hdr.prevHash && hdr.prevHash !== normHash(row.prevHash)) {
+        throw new Error(`SPV window prevHash #${height} mismatch`);
+      }
+      if (prev && Number(row.height) === prev.height + 1 && hdr.prevHash && prev.hash) {
+        if (hdr.prevHash !== prev.hash) {
+          throw new Error(`local header link break #${prev.height}→#${height}`);
+        }
+      }
+      prev = { height, hash: hdr.hash };
+    }
+    const newest = [...window].sort((a, b) => Number(b.height) - Number(a.height));
+    for (const row of newest) {
+      if (txWindow.length >= SPV_TX_WINDOW) break;
+      const txs = await fetchLocalBlockTxHashes(row.height);
+      for (const txHash of txs) {
+        txWindow.push({ height: Number(row.height), txHash });
+        if (txWindow.length >= SPV_TX_WINDOW) break;
+      }
+    }
   }
+
   return {
     localHeight: localH,
     spvHeight: spvH,
-    ancestorHash: atSpv,
+    ancestorHash: spvHash,
+    matched: matched.filter(Boolean).length,
+    window: window.length,
+    txWindow: txWindow.length,
   };
 }
 

@@ -16,7 +16,8 @@ import {
  *   1. Cartesi inspect/pool — machine state + recent release tickets
  *   2. GraphQL notices — pool_release_ticket + Cartesi output proof
  *   3. Application.validateNotice on L1 — not /api/pool JSON, not inspect "authorized"
- *   4. This tab's DeFi WASM node — synced, SPV tip is an ancestor, Q free ≥ ticket
+ *   4. This tab's DeFi WASM node — synced; SPV tip/checkpoint/pin + header
+ *      window (hash + merkelroot / txs) equal on WASM; Q free ≥ ticket
  *
  * Inspect "authorized" is not an attestation. Epoch proof + validateNotice is.
  * WASM down / unsynced / fork vs SPV → do not sign. Lab-demo tickets skip the notice.
