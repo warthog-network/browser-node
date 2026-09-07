@@ -1674,10 +1674,25 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
     rotateOpen.some((r) => r.ticketId === p3.rotation.sweepTicketId)
       ? p3.rotation.sweepTicketId
       : rotateOpen[0]?.ticketId || null;
-  const actionable = rawActionable.filter((r) => {
-    if (!/^wart-pool-rotate-/.test(String(r.ticketId || ''))) return true;
-    return keepRotate && r.ticketId === keepRotate;
-  });
+  const userOpen = rawActionable
+    .filter((r) => !/^wart-pool-rotate-/.test(String(r.ticketId || '')))
+    .slice()
+    .sort((a, b) => {
+      try {
+        const aa = BigInt(String(a.amountE8 || '0'));
+        const bb = BigInt(String(b.amountE8 || '0'));
+        if (bb > aa) return 1;
+        if (bb < aa) return -1;
+      } catch {
+        /* */
+      }
+      return String(b.ticketId || '').localeCompare(String(a.ticketId || ''));
+    });
+  // One user room at a time so leftover Q pays the largest unpaid burn first.
+  const actionable = [
+    ...userOpen.slice(0, 1),
+    ...rawActionable.filter((r) => keepRotate && r.ticketId === keepRotate),
+  ];
   const results = [];
   let lastVerify = null;
   const { verifyOpenRequest, probeMachineHealth, fetchInspectPool } = await import(

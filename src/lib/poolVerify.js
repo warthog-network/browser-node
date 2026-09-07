@@ -5,8 +5,10 @@ import {
   validateNoticeOnL1,
 } from './cartesiNoticeProof.js';
 import {
+  assertPoolPayoutCovered,
   fetchLocalChainHead,
   isLocalDefiNodeLive,
+  parseWartBalanceE8,
   verifyLocalForPayout,
 } from './localWartChain.js';
 
@@ -26,7 +28,8 @@ import {
 export const ROLLUP_INSPECT =
   'https://cartesi-bridge.duckdns.org/rollup/inspect/pool';
 export const ROLLUP_GRAPHQL = 'https://cartesi-bridge.duckdns.org/rollup/graphql';
-export const WART_HEAD = 'https://warthog-defitestnet.duckdns.org/chain/head';
+export const WART_DEFI_RPC = 'https://warthog-defitestnet.duckdns.org';
+export const WART_HEAD = `${WART_DEFI_RPC}/chain/head`;
 export const VERIFY_SNAPSHOT =
   'https://cartesi-bridge.duckdns.org/api/pool?verifyTicket=';
 
@@ -204,6 +207,20 @@ export async function fetchReleaseNotice(ticketId) {
       voucherCount: Number(snap.voucherCount || 0),
     };
   }
+}
+
+/** DeFi HTTPS balance — used when this tab's WASM node is on Official1 / down. */
+export async function fetchHttpDefiBalanceE8(address, rpc = WART_DEFI_RPC) {
+  const addr = String(address || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+  if (!/^[0-9a-f]{48}$/.test(addr)) throw new Error('wart address required');
+  const j = await fetchJson(`${String(rpc).replace(/\/$/, '')}/account/${addr}/wart_balance`);
+  return { ...parseWartBalanceE8(j), address: addr, source: 'defi-http' };
+}
+
+export function wasmSkipAllowsHttpCover(local, noticeAndInspectOk) {
+  return Boolean(local?.skipped && noticeAndInspectOk);
 }
 
 export async function fetchIndependentHead({ allowVpsFallback = true } = {}) {
@@ -428,6 +445,25 @@ export async function verifyOpenRequest(req) {
   if (local.ok && !local.skipped) {
     ev.checks.localChain = true;
     if (local.ancestry) ev.checks.spv = true;
+  } else if (wasmSkipAllowsHttpCover(local, ev.ok) && req.poolAddress && req.amountE8 != null) {
+    // Holder tabs often stay on Official1. Rotate still requires WASM; an
+    // inspect+notice user burn can cover from DeFi HTTP so d1/d2 can offer.
+    try {
+      const httpBal = await fetchHttpDefiBalanceE8(req.poolAddress);
+      assertPoolPayoutCovered(httpBal.free, req.amountE8, req.poolAddress);
+      ev.checks.localChain = true;
+      ev.local = {
+        ...ev.local,
+        skipped: false,
+        source: 'defi-http',
+        freeE8: httpBal.free.toString(),
+      };
+    } catch (e) {
+      ev.ok = false;
+      ev.checks.localChain = false;
+      const msg = e?.message || String(e);
+      if (!ev.reasons.includes(msg)) ev.reasons.push(msg);
+    }
   } else {
     ev.ok = false;
     ev.checks.localChain = false;

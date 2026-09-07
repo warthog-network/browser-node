@@ -192,7 +192,11 @@ export default function PoolThresholdSigner() {
       setStatus(st);
 
       const liveN = p3?.orbit?.liveCount ?? hb?.orbit?.liveCount ?? 0;
-      const last = results[results.length - 1] || {};
+      const last =
+        results.find((r) => r.payout?.txHash || r.txHash || r.paid) ||
+        [...results].reverse().find((r) => !r.skipped) ||
+        results[results.length - 1] ||
+        {};
       const paidTx = last.payout?.txHash || last.txHash || null;
       const justPaid = Boolean(last.paid || last.alreadyPaid || paidTx);
 

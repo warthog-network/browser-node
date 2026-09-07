@@ -83,6 +83,20 @@ try {
 assertPoolPayoutCovered(399999999n, 399989999);
 check('live Q covers rotate amount', true);
 
+const { wasmSkipAllowsHttpCover } = await import('../src/lib/poolVerify.js');
+check(
+  'WASM-down + notice/inspect ok may use DeFi HTTP cover',
+  wasmSkipAllowsHttpCover({ skipped: true }, true) === true,
+);
+check(
+  'WASM-down without notice still fail-closed',
+  wasmSkipAllowsHttpCover({ skipped: true }, false) === false,
+);
+check(
+  'WASM running-but-failed does not fall through to HTTP',
+  wasmSkipAllowsHttpCover({ skipped: false, ok: false }, true) === false,
+);
+
 if (failures) {
   console.error(`\n${failures} failed`);
   process.exit(1);
