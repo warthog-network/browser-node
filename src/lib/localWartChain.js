@@ -24,6 +24,18 @@ export function isLocalDefiNodeLive() {
 }
 
 function unwrapRpc(j) {
+  if (typeof j === 'string') {
+    const s = j.trim();
+    if (s.startsWith('{') || s.startsWith('[')) {
+      try {
+        j = JSON.parse(s);
+      } catch {
+        return s;
+      }
+    } else {
+      return s;
+    }
+  }
   if (j && typeof j === 'object' && 'code' in j) {
     if (j.code !== 0 && j.code != null) {
       throw new Error(j.error || `rpc code ${j.code}`);

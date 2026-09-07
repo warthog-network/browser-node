@@ -1724,6 +1724,12 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
             spv: !!local.ancestry,
           },
           local,
+          wartHead: local.head
+            ? { height: local.head.height, hash: local.head.hash, source: 'local-wasm' }
+            : null,
+          machine: inspect?.pool?.spv
+            ? { bestHeight: inspect.pool.spv.bestHeight, bestHash: inspect.pool.spv.bestHash }
+            : null,
           reasons: wasmOk
             ? []
             : local.reasons || ['DeFi WASM node not running — start the full node to sign'],
