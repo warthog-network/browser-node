@@ -262,14 +262,28 @@ async function withRetry(fn, { tries = 3, delayMs = 400 } = {}) {
   throw last;
 }
 
-export async function fetchThresholdStatus(api = DEFAULT_POOL_API) {
-  return withRetry(() => poolGet(api, 'threshold=1'));
-}
-
 export async function fetchPool3pStatus(api = DEFAULT_POOL_API) {
   return withRetry(() =>
     poolPost(api, { action: 'pool3p_status' }),
   );
+}
+
+/**
+ * Open rooms + pool address in the shape callers expect. This used to be
+ * `GET ?threshold=1`, the Path A3 status with the 3P rooms merged in; A3 is
+ * being pruned from the coordinator, so read the 3P view directly.
+ */
+export async function fetchThresholdStatus(api = DEFAULT_POOL_API) {
+  const p3 = await fetchPool3pStatus(api);
+  const open = Array.isArray(p3?.open) ? p3.open : [];
+  return {
+    ok: p3?.ok !== false,
+    source: 'pool3p_status',
+    open,
+    openCount: open.length,
+    signers: { poolAddress: p3?.address || null },
+    pool3p: p3,
+  };
 }
 
 function compactPointHex(hex) {
@@ -1706,7 +1720,7 @@ async function sign3pAsRole1(share, req, api) {
 
 export async function contributeOpen(share, api = DEFAULT_POOL_API) {
   const st = await fetchThresholdStatus(api);
-  const p3 = await fetchPool3pStatus(api).catch(() => null);
+  const p3 = st.pool3p || (await fetchPool3pStatus(api).catch(() => null));
   const seen = new Set();
   const open = [];
   for (const r of [...(p3?.open || []), ...(st.open || [])]) {
