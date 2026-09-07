@@ -231,7 +231,16 @@ async function loadHexForLiveSeat(signerId, role, st, api) {
   // orbit: if this seat was packed, `t` holders can reseal their pieces to us
   // and we can rebuild the record. This is the path that would have saved e1 —
   // a seat whose only copy left with a closed tab.
-  if (api) {
+  //
+  // Only when the seat is actually ours to repair: a bystander asking while a
+  // live holder sits in the seat was one reseal request per beat, every beat,
+  // answered "no sealed pack" — the extension's steady 400 stream.
+  const holder = role === 1 ? st?.holder1 : st?.holder2;
+  const holderLive = !!(holder && (st?.orbit?.live || []).includes(holder));
+  const seatRecoverable =
+    Number(st?.recoverVacant || 0) === Number(role) || !!st?.vacantBorn?.[String(role)];
+  const mayAskOrbit = !holder || holder === signerId || !holderLive || seatRecoverable;
+  if (api && mayAskOrbit) {
     try {
       const liveP = compactPt(role === 1 ? st?.seal?.P1 : st?.seal?.P2);
       const rec = await (await preshare()).recoverSeat({
