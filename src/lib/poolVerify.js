@@ -491,13 +491,15 @@ export async function probeMachineHealth() {
 
 export function formatVerifyLine(v) {
   if (!v) return 'verify —';
-  const noticeBit = v.checks?.noticeProof
-    ? '✓ notice-proof'
-    : v.checks?.notice
-      ? '… notice-proof'
-      : v.ok
-        ? '— notice'
-        : '✗ notice';
+  const noticeBit = v.rotationSweep
+    ? 'rotate'
+    : v.checks?.noticeProof
+      ? '✓ notice-proof'
+      : v.checks?.notice
+        ? '… notice-proof'
+        : v.ok
+          ? '— notice'
+          : '✗ notice';
   const bit = (ok, label) => `${ok ? '✓' : '✗'} ${label}`;
   const lag =
     v.wartHead?.lag == null ? '' : ` · lag ${v.wartHead.lag}`;
@@ -518,5 +520,9 @@ export function formatVerifyLine(v) {
   const h = v.machine?.bestHeight
     ? ` · SPV #${v.machine.bestHeight}/${v.wartHead?.height || '?'}${lag}`
     : '';
-  return `${noticeBit} · ${bit(v.checks?.inspect, 'machine')} · ${bit(v.checks?.spv, 'SPV')}${h}${localBit}`;
+  const why =
+    v.ok === false && v.reasons?.[0]
+      ? ` · ${String(v.reasons[0]).slice(0, 80)}`
+      : '';
+  return `${noticeBit} · ${bit(v.checks?.inspect, 'machine')} · ${bit(v.checks?.spv, 'SPV')}${h}${localBit}${why}`;
 }

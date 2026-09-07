@@ -1717,7 +1717,12 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
         lastVerify = {
           ok: wasmOk,
           rotationSweep: true,
-          checks: { inspect: true, localChain: wasmOk },
+          checks: {
+            inspect: true,
+            localChain: wasmOk,
+            noticeProof: true,
+            spv: !!local.ancestry,
+          },
           local,
           reasons: wasmOk
             ? []

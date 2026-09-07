@@ -121,7 +121,9 @@ export async function fetchLocalBlockHash(height) {
   const h = Number(height);
   if (!Number.isFinite(h) || h <= 0) throw new Error('block height required');
   const data = unwrapRpc(await rpcGet(`/chain/block/${h}/hash`));
-  const hash = normHash(data?.hash || data?.header?.hash);
+  const hash = normHash(
+    typeof data === 'string' ? data : data?.hash || data?.header?.hash,
+  );
   if (!hash) throw new Error(`local block ${h} has no hash`);
   return hash;
 }
