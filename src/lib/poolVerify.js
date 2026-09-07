@@ -157,12 +157,38 @@ export async function fetchInspectPool() {
 
 async function graphqlNoticesPage(cursor) {
   const after = cursor ? `, before: "${cursor}"` : '';
-  const query = `{ notices(last: 100${after}) { pageInfo { hasPreviousPage startCursor } edges { node { ${NOTICE_PROOF_GQL} } } } vouchers(last: 20) { edges { node { index destination payload } } } }`;
+  // Payloads only — pulling OutputValidityProof for 100 header notices
+  // times out the browser, so d1 never sees an already-claimed epoch.
+  const query = `{ notices(last: 100${after}) { pageInfo { hasPreviousPage startCursor } edges { node { index payload input { index } } } } vouchers(last: 20) { edges { node { index destination payload } } } }`;
   return fetchJson(ROLLUP_GRAPHQL, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query }),
   });
+}
+
+async function graphqlInputNoticeProof(inputIndex) {
+  const idx = Number(inputIndex);
+  if (!Number.isFinite(idx) || idx < 0) return null;
+  const query = `{ input(index: ${idx}) { index notices { edges { node { ${NOTICE_PROOF_GQL} } } } } }`;
+  const json = await fetchJson(ROLLUP_GRAPHQL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query }),
+  });
+  return json?.data?.input || null;
+}
+
+function noticeRow(obj, node) {
+  const proof = node?.proof || null;
+  return {
+    ...obj,
+    _index: Number(node?.index ?? 0),
+    _inputIndex: node?.input?.index ?? null,
+    _payloadHex: node?.payload || null,
+    _proof: proof,
+    _hasProof: noticeHasProof(proof),
+  };
 }
 
 export async function fetchReleaseNotice(ticketId) {
@@ -183,20 +209,31 @@ export async function fetchReleaseNotice(ticketId) {
         if (!obj || obj.type !== 'pool_release_ticket') continue;
         if (String(obj.ticketId || '') !== id) continue;
         const idx = Number(e?.node?.index ?? 0);
-        const proof = e?.node?.proof || null;
         const row = {
           ...obj,
           _index: idx,
           _inputIndex: e?.node?.input?.index ?? null,
           _payloadHex: e?.node?.payload || null,
-          _proof: proof,
-          _hasProof: noticeHasProof(proof),
+          _proof: null,
+          _hasProof: false,
         };
         if (!best || idx >= best._index) best = row;
       }
       if (best) break;
       if (!conn.pageInfo?.hasPreviousPage || !conn.pageInfo?.startCursor) break;
       cursor = conn.pageInfo.startCursor;
+    }
+    if (best?._inputIndex != null) {
+      const inp = await graphqlInputNoticeProof(best._inputIndex);
+      for (const e of inp?.notices?.edges || []) {
+        const obj = parseNoticePayload(e?.node?.payload);
+        if (!obj || String(obj.ticketId || '') !== id) continue;
+        best = noticeRow(obj, {
+          ...e.node,
+          input: { index: inp.index },
+        });
+        break;
+      }
     }
     return { source: 'rollup-graphql', notice: best, voucherCount };
   } catch {
