@@ -64,6 +64,27 @@ function e8Of(v) {
   }
 }
 
+/**
+ * Warthog `/account/:addr/wart_balance` after unwrapRpc.
+ * HTTP and WASM virtual_get both use `{ wart: { total: { E8 }, locked } }`.
+ * Older `/balance` replies used `{ total, locked }` or `{ balance: … }`.
+ */
+export function parseWartBalanceE8(raw) {
+  const data = unwrapRpc(raw);
+  const wart = data?.wart || data?.balance?.wart || data?.balance || data || {};
+  const total = e8Of(wart.total ?? wart.amount ?? wart);
+  const locked = e8Of(wart.locked);
+  const mempool = e8Of(wart.mempool);
+  const freeField = wart.free ?? wart.available;
+  const free =
+    freeField != null
+      ? e8Of(freeField)
+      : total > locked
+        ? total - locked
+        : 0n;
+  return { total, locked, mempool, free };
+}
+
 export function flattenWartLookup(data) {
   if (!data) return null;
   const t = data.transaction || data;
@@ -295,20 +316,19 @@ export async function lookupLocalTx(txHash) {
 export async function localWartBalanceE8(address) {
   const addr = normAddr(address);
   if (!/^[0-9a-f]{48}$/.test(addr)) throw new Error('wart address required');
-  const data = unwrapRpc(await rpcGet(`/account/${addr}/wart_balance`));
-  const bal = data?.balance || data;
-  const total = e8Of(bal?.total ?? bal);
-  const locked = e8Of(bal?.locked);
-  const free = total > locked ? total - locked : 0n;
-  return { total, locked, free };
+  const parsed = parseWartBalanceE8(await rpcGet(`/account/${addr}/wart_balance`));
+  return { ...parsed, address: addr };
 }
 
-export function assertPoolPayoutCovered(freeE8, amountE8) {
+export function assertPoolPayoutCovered(freeE8, amountE8, poolAddress = '') {
   const need = e8Of(amountE8);
   if (need <= 0n) throw new Error('ticket amount must be > 0');
   if (freeE8 < need) {
+    const who = poolAddress
+      ? ` ${String(poolAddress).replace(/^0x/i, '').slice(0, 12)}…`
+      : '';
     throw new Error(
-      `local Q free ${freeE8} E8 < ticket ${need} E8`,
+      `local Q${who} free ${freeE8} E8 < ticket ${need} E8`,
     );
   }
   return true;
@@ -383,7 +403,7 @@ export async function verifyLocalForPayout({
   if (poolAddress && amountE8 != null) {
     try {
       balance = await localWartBalanceE8(poolAddress);
-      assertPoolPayoutCovered(balance.free, amountE8);
+      assertPoolPayoutCovered(balance.free, amountE8, poolAddress);
     } catch (e) {
       reasons.push(e?.message || String(e));
     }

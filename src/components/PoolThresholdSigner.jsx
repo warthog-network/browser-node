@@ -238,6 +238,12 @@ export default function PoolThresholdSigner() {
         return;
       }
 
+      if (last.skipped && !last.waiting) {
+        setPhase('signing');
+        putLog(last.error || 'verification failed');
+        return;
+      }
+
       const waiting = last.waiting || last.orbitOnly;
       if (waiting || TRANSIENT.test(String(last.error || ''))) {
         setPhase('signing');

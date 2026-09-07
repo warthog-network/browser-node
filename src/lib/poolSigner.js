@@ -1705,8 +1705,9 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
         const { isLocalDefiNodeLive, verifyLocalForPayout } = await import(
           './localWartChain.js'
         );
+        // Sweep pays from the live Q, not this tab's next-Q birth cache.
         const poolAddress =
-          share.poolAddress || p3?.address || st.signers?.poolAddress;
+          p3?.address || st.signers?.poolAddress || share.poolAddress;
         const inspect = await fetchInspectPool().catch(() => null);
         const local = await verifyLocalForPayout({
           poolAddress,
@@ -1740,7 +1741,7 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
           ticketId: req.ticketId,
           toAddress: req.toAddress,
           amountE8: req.amountE8,
-          poolAddress: share.poolAddress || p3?.address || st.signers?.poolAddress,
+          poolAddress: p3?.address || share.poolAddress || st.signers?.poolAddress,
           labDemo: Boolean(req.labDemo),
         });
         lastVerify = verify;

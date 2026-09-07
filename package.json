@@ -20,6 +20,7 @@
     "test:eth3p": "node scripts/test-eth3p-seat-recovery.mjs",
     "test:identity": "node scripts/test-node-identity.mjs",
     "test:preshare": "node scripts/test-sealed-preshare.mjs",
+    "test:balance": "node scripts/test-local-wart-balance.mjs",
     "test:eth3p:churn": "node scripts/test-eth3p-churn-recovery.mjs"
   },
   "dependencies": {
