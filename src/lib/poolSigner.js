@@ -1000,6 +1000,9 @@ async function tryRecoverFromPack(signerId, role, api, hint) {
     signerId,
     role,
   });
+  if (pack?.denied) {
+    throw new Error(pack.message || 'orbit pack held by a live seat holder');
+  }
   const need = Number(pack?.t || 2);
   if (!pack?.shares || pack.shares.length < need) {
     throw new Error(
@@ -1855,6 +1858,10 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
           canOfferD2 = await hexMatchesLivePoint(d2Hex, p3.seal.P2);
         }
       }
+      // Only the seat holder's Enc(d2) is accepted. A spare tab with the same
+      // scalar posting every poll was just "d2 refused" noise in the journal.
+      const h2 = p3?.holder2 || p3?.holders?.['2']?.signerId || null;
+      if (canOfferD2 && h2 && h2 !== share.signerId) canOfferD2 = false;
       if (canOfferD2) {
         r = await postD2Offer(
           { ...share, role: 2, userShareHex: d2Hex },
