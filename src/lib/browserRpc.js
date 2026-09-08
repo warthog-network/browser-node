@@ -7,6 +7,26 @@
  * (or these helpers) after Start. Not a drop-in website-wallet node URL.
  */
 
+/**
+ * A hung node must not hang the caller. virtual_get/virtual_post resolve
+ * inside the WASM worker; if that worker died (OOM, crashed pthread) the
+ * promise never settles, and a signer tick awaiting it held its lock forever —
+ * three WART signers went silent for an hour on 2026-09-08 while their ETH
+ * signers in the same tabs kept beating.
+ */
+export const RPC_TIMEOUT_MS = 15000;
+
+function withRpcTimeout(promise, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`WASM node did not answer ${label} within ${RPC_TIMEOUT_MS}ms — node hung?`)),
+      RPC_TIMEOUT_MS,
+    );
+  });
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
+}
+
 /** @returns {object|null} live Emscripten Module for the running node */
 export function getWartNodeModule() {
   if (typeof window === 'undefined') return null;
@@ -27,7 +47,7 @@ export async function rpcGet(path) {
   if (!p.startsWith('/')) {
     throw new Error(`RPC path must start with / (got ${p})`);
   }
-  return mod.virtual_get(p);
+  return withRpcTimeout(mod.virtual_get(p), `GET ${p}`);
 }
 
 /**
@@ -46,7 +66,7 @@ export async function rpcPost(path, body) {
     throw new Error(`RPC path must start with / (got ${p})`);
   }
   const data = typeof body === 'string' ? body : JSON.stringify(body ?? {});
-  return mod.virtual_post(p, data);
+  return withRpcTimeout(mod.virtual_post(p, data), `POST ${p}`);
 }
 
 /**

@@ -80,6 +80,9 @@ function useRotateDue(rotation) {
   return due;
 }
 
+/** A tick older than this is presumed wedged; the next one may overlap it. */
+const TICK_STUCK_MS = 45000;
+
 export default function PoolThresholdSigner() {
   const [share, setShare] = useState(null);
   const [enabled, setEnabled] = useState(false);
@@ -92,7 +95,7 @@ export default function PoolThresholdSigner() {
   const [error, setError] = useState(null);
   const [stats, setStats] = useState({ signedCount: 0, history: [] });
   const [verify, setVerify] = useState(null);
-  const tickLock = useRef(false);
+  const tickLock = useRef(0);
   const lastLog = useRef('');
   const signedUntil = useRef(0);
   const hotRef = useRef(false);
@@ -158,8 +161,12 @@ export default function PoolThresholdSigner() {
   }, [joinOrbit]);
 
   const tick = useCallback(async () => {
-    if (!share || !enabled || tickLock.current) return;
-    tickLock.current = true;
+    if (!share || !enabled) return;
+    // The lock serializes ticks; a tick wedged on a promise that never settles
+    // (hung WASM node, mid-flight fetch) must not stop heartbeats for good —
+    // after TICK_STUCK_MS the next tick runs alongside it.
+    if (tickLock.current && Date.now() - tickLock.current < TICK_STUCK_MS) return;
+    tickLock.current = Date.now();
     try {
       const hb = await heartbeat(share);
       if (hb?.share && hb.share !== share) {
@@ -299,7 +306,7 @@ export default function PoolThresholdSigner() {
         /* */
       }
     } finally {
-      tickLock.current = false;
+      tickLock.current = 0;
     }
   }, [share, enabled, stats.signedCount]);
 
