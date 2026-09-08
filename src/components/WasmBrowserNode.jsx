@@ -1101,7 +1101,10 @@ export default function WasmBrowserNode() {
               </button>
             ))}
           </div>
-          <div className={`dash__badge ${badgeClass}`}>{badgeLabel}</div>
+          <div className="dash__header-status">
+            <div className={`dash__badge ${badgeClass}`}>{badgeLabel}</div>
+            <UpdateBanner />
+          </div>
         </div>
       </header>
 
@@ -1336,7 +1339,6 @@ export default function WasmBrowserNode() {
       )}
 
       <div className="signers-row">
-        <UpdateBanner />
         <PoolThresholdSigner />
         <EthPoolThresholdSigner />
       </div>

@@ -1801,15 +1801,23 @@
   height: 220px;
 }
 
-/* "A newer build is deployed" strip above the signers (UpdateBanner.jsx). */
+/* Ready badge + build line stacked in the header (UpdateBanner.jsx sits under the badge). */
+.dash__header-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.3rem;
+}
+
+/* "A newer build is deployed" — under the ready badge (UpdateBanner.jsx). */
 .update-banner {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 0.75rem;
   flex-wrap: wrap;
-  margin: 0.75rem 0;
-  padding: 0.6rem 0.9rem;
+  margin: 0;
+  padding: 0.4rem 0.75rem;
   border: 1px solid rgba(255, 196, 0, 0.55);
   border-radius: 8px;
   background: rgba(255, 196, 0, 0.08);
@@ -1820,9 +1828,11 @@
 }
 
 .update-banner__version {
-  margin: 0.25rem 0 0.5rem;
-  font-size: 0.8rem;
+  margin: 0;
+  font-size: 0.75rem;
   opacity: 0.7;
+  text-align: right;
+  white-space: nowrap;
 }
 .update-banner__version code {
   font-size: 0.9em;
