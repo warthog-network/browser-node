@@ -25,8 +25,23 @@ export default function UpdateBanner() {
       stop();
     };
   }, []);
-  if (!st.outdated) return null;
   const ext = isExtensionPage();
+  if (!st.outdated) {
+    // Always say which build this is — a tab that looks fine but is a week
+    // behind is exactly the case nobody notices.
+    const checked = st.checkedAt ? new Date(st.checkedAt).toLocaleTimeString() : null;
+    return (
+      <p className="update-banner__version" title={st.error ? `update check failed: ${st.error}` : undefined}>
+        {ext ? 'extension' : 'site'} build <code>{CLIENT_VERSION}</code>
+        {st.latest
+          ? ' · up to date'
+          : st.error
+            ? ' · update check failed'
+            : ' · checking…'}
+        {checked ? ` · checked ${checked}` : ''}
+      </p>
+    );
+  }
   return (
     <div className="update-banner" role="status">
       <span>
