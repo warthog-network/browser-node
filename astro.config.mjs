@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'astro/config';
 import react from '@astrojs/react';
 import netlify from '@astrojs/netlify';
+import { buildIdentity } from './scripts/lib/clientVersion.mjs';
+
+const build = buildIdentity();
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 
@@ -28,6 +31,8 @@ export default defineConfig({
   vite: {
     define: {
       global: 'globalThis',
+      __CLIENT_VERSION__: JSON.stringify(build.version),
+      __CLIENT_BUILT_AT__: JSON.stringify(build.builtAt),
     },
     // Reached only through the lazy import('./preshareClient.js') in
     // poolSigner/ethPoolSigner, so Vite's startup scan never sees them and

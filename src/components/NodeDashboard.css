@@ -1800,3 +1800,21 @@
 .dash--sidepanel .console {
   height: 220px;
 }
+
+/* "A newer build is deployed" strip above the signers (UpdateBanner.jsx). */
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 0.75rem 0;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid rgba(255, 196, 0, 0.55);
+  border-radius: 8px;
+  background: rgba(255, 196, 0, 0.08);
+  font-size: 0.9rem;
+}
+.update-banner code {
+  font-size: 0.85em;
+}

@@ -9,6 +9,7 @@
  * - Writes manifest with COOP/COEP for SharedArrayBuffer (pthreads)
  */
 import esbuild from 'esbuild';
+import { buildIdentity } from './lib/clientVersion.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -69,6 +70,8 @@ await esbuild.build({
   define: {
     'process.env.NODE_ENV': '"production"',
     global: 'globalThis',
+    __CLIENT_VERSION__: JSON.stringify(buildIdentity().version),
+    __CLIENT_BUILT_AT__: JSON.stringify(buildIdentity().builtAt),
   },
   // Do NOT bundle the multi‑MB Emscripten glue — loaded at runtime from /node/
   external: [],

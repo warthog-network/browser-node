@@ -52,6 +52,7 @@ import {
 import { formatHashrate, shortAddr } from '../lib/presets.js';
 import PoolThresholdSigner from './PoolThresholdSigner.jsx';
 import EthPoolThresholdSigner from './EthPoolThresholdSigner.jsx';
+import UpdateBanner from './UpdateBanner.jsx';
 import './NodeDashboard.css';
 
 const CONSOLE_TABS = [
@@ -1335,6 +1336,7 @@ export default function WasmBrowserNode() {
       )}
 
       <div className="signers-row">
+        <UpdateBanner />
         <PoolThresholdSigner />
         <EthPoolThresholdSigner />
       </div>

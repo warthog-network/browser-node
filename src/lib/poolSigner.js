@@ -6,6 +6,8 @@
  * Full d is never on this device.
  */
 export const DEFAULT_POOL_API = 'https://cartesi-bridge.duckdns.org/api/pool';
+import { CLIENT_VERSION } from './clientVersion.js';
+import { reportSignerSafety } from './signerSafety.js';
 
 const ENABLED_KEY = 'wart.poolSigner.enabled';
 const PANEL_KEY = 'wart.poolSigner.panelOpen';
@@ -1231,11 +1233,22 @@ export async function heartbeat(share, api = DEFAULT_POOL_API) {
         action: 'pool3p_heartbeat',
         signerId: share.signerId,
         seatEpoch: share.seatEpoch,
+        clientVersion: CLIENT_VERSION,
         // Public key so other seats can seal pieces to this node, plus a signed
         // presence claim. Ignored by a coordinator that has not deployed these.
         ...(pendingIdentityFields || {}),
       }),
     );
+    {
+      // Tell the update watcher whether this tab may reload right now.
+      const myRole = Number(r.role || share.role || 0);
+      const held = myRole === 1 || myRole === 2;
+      reportSignerSafety('wart', {
+        holder: held,
+        openRooms: (r.open || []).length,
+        packReady: held ? (r.packs?.[String(myRole)]?.ready ?? null) : null,
+      });
+    }
     // Refreshed after the post so the next beat carries a current claim, and so
     // a first beat against an old server costs nothing.
     pendingIdentityFields = await (await preshare())

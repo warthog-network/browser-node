@@ -3,6 +3,8 @@
  * Birth + heartbeat only here; ETH Lindell pay lands after wrap/unwrap tickets.
  */
 export const DEFAULT_POOL_API = 'https://cartesi-bridge.duckdns.org/api/pool';
+import { CLIENT_VERSION } from './clientVersion.js';
+import { reportSignerSafety } from './signerSafety.js';
 
 const ENABLED_KEY = 'eth.poolSigner.enabled';
 const PANEL_KEY = 'eth.poolSigner.panelOpen';
@@ -852,6 +854,7 @@ export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
     action: 'eth3p_heartbeat',
     signerId,
     seatEpoch: share?.seatEpoch ?? 0,
+    clientVersion: CLIENT_VERSION,
     // Publishes this node's public key (so others can seal pieces to it) and a
     // signed presence claim. Best-effort: an old coordinator ignores both.
     ...(await (await preshare()).identityFields({
@@ -863,6 +866,11 @@ export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
     // Reported one beat late by construction: the fault is raised while handling
     // the previous response. That is soon enough — a stuck seat stays stuck.
     ...(pendingSeatFault ? { seatFault: pendingSeatFault } : {}),
+  });
+  reportSignerSafety('eth', {
+    holder: Number(r?.role || 0) === 1 || Number(r?.role || 0) === 2,
+    openRooms: (r?.open || []).length,
+    packReady: null,
   });
   const role = Number(r.role || r.share?.role || share?.role || 0);
 

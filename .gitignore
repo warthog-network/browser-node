@@ -31,3 +31,6 @@ npm-debug.log*
 .idea/
 .vscode/
 *.swp
+
+# written by scripts/write-version.mjs at build time
+public/version.json
