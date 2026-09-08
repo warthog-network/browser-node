@@ -153,6 +153,10 @@ export async function fetchInspectPool() {
         source: 'pool-snapshot',
         raw: snap.inspect.raw || snap.inspect,
         pool: snap.inspect.pool,
+        // Coordinator's read of the machine's replay state. A replaying
+        // machine reports a ledger hours behind — nothing verified against it
+        // is trustworthy, and a signer must say so rather than "no notice".
+        machine: snap.machine || null,
       };
       inspectCache = { at: Date.now(), value };
       return value;
@@ -484,6 +488,16 @@ export async function verifyOpenRequest(req) {
     notice,
     wartHead,
   });
+  if (inspect.machine?.replaying) {
+    const m = inspect.machine;
+    ev.ok = false;
+    ev.checks.inspect = false;
+    ev.reasons.unshift(
+      `machine replaying ${m.processed}/${m.total} inputs` +
+        (m.etaMinutes != null ? ` (eta ${m.etaMinutes} min)` : '') +
+        ' — ledger is stale, holding',
+    );
+  }
   if (gql.gqlError && notice && !notice._hasProof) {
     ev.reasons.unshift(`rollup GraphQL failed — ${gql.gqlError}`);
   }
