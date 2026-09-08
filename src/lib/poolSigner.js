@@ -1127,9 +1127,11 @@ async function packCachedSeat(share, api, role, hex) {
   if (!hex) return null;
   const st = await fetchPool3pStatus(api).catch(() => null);
   const P = await pointOfShare(hex);
-  return (await preshare())
+  const ps = await preshare();
+  const post = (action, body) => poolPost(api, { action, ...body });
+  const result = await ps
     .packSeat({
-      post: (action, body) => poolPost(api, { action, ...body }),
+      post,
       prefix: 'pool3p',
       pool: 'wart',
       signerId: share.signerId,
@@ -1140,7 +1142,16 @@ async function packCachedSeat(share, api, role, hex) {
       orbitKeys: st?.orbitKeys || {},
       otherHolderId: Number(role) === 1 ? st?.holder2 : st?.holder1,
     })
-    .catch(() => null);
+    .catch((e) => ({ packed: false, role: Number(role), reason: `pack threw: ${e?.message || e}` }));
+  await ps.reportPack({
+    post,
+    prefix: 'pool3p',
+    pool: 'wart',
+    signerId: share.signerId,
+    result,
+    client: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
+  });
+  return result?.packed ? result.targets : null;
 }
 
 async function packNextSeat(share, api) {

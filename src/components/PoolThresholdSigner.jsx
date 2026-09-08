@@ -633,14 +633,14 @@ export default function PoolThresholdSigner() {
           </ol>
           {d1Pack && !d1Pack.ready ? (
             <p className="pool-signer__meta is-warn">
-              d1 pack not on this orbit ({d1Pack.liveCovered || 0}/
-              {d1Pack.liveNeed || 0} live) — the d1 tab must republish
+              d1 unprotected ({d1Pack.liveCovered || 0}/{d1Pack.liveNeed || 0} live recipients)
+              {d1Pack.holderSays?.reason ? ` — d1 tab: ${d1Pack.holderSays.reason}` : ' — the d1 tab must republish'}
             </p>
           ) : null}
           {d2Pack && !d2Pack.ready ? (
             <p className="pool-signer__meta is-warn">
-              d2 pack not on this orbit ({d2Pack.liveCovered || 0}/
-              {d2Pack.liveNeed || 0} live)
+              d2 unprotected ({d2Pack.liveCovered || 0}/{d2Pack.liveNeed || 0} live recipients)
+              {d2Pack.holderSays?.reason ? ` — d2 tab: ${d2Pack.holderSays.reason}` : ''}
             </p>
           ) : null}
           {verify && (

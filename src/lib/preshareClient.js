@@ -71,7 +71,18 @@ export async function packSeat({
   t = 2,
   max = 4,
 }) {
-  if (!record || !P || !(Number(role) === 1 || Number(role) === 2)) return null;
+  const live = (orbit || []).filter(Boolean);
+  const decline = (reason, extra = {}) => ({
+    packed: false,
+    role: Number(role),
+    reason,
+    need: t,
+    live: live.length,
+    ...extra,
+  });
+  if (!record || !P || !(Number(role) === 1 || Number(role) === 2)) {
+    return decline(!record ? 'no share record to pack' : !P ? 'seat P unknown' : 'not a seat holder');
+  }
 
   const targets = chooseTargets({
     orbit,
@@ -80,22 +91,59 @@ export async function packSeat({
     pubKeys: orbitKeys || {},
     max,
   });
-  if (targets.length < t) return null;
+  if (targets.length < t) {
+    // The usual reason a seat stays unprotected: 2 holders + too few spare
+    // tabs. Say so — this used to be a silent null and looked like a healthy
+    // pack from the coordinator's side.
+    const eligible = live.filter((id) => id !== signerId && id !== otherHolderId).length;
+    return decline(
+      `need ${t} sealable targets, have ${targets.length} (${live.length} live, ${eligible} eligible, ${targets.length} with a published key)`,
+      { targets: targets.map((x) => x.id) },
+    );
+  }
 
   const sig = sigOf(role, targets);
-  if (packSig.get(`${pool}:${role}`) === sig) return null;
+  if (packSig.get(`${pool}:${role}`) === sig) {
+    return { packed: true, unchanged: true, role: Number(role), targets: targets.map((x) => x.id) };
+  }
 
   try {
     const pack = await buildPack({ record, targets, t, aad: packAad({ pool, role, P }) });
     const r = await post(`${prefix}_preshare_put`, { signerId, role: Number(role), pack });
-    if (r?.ok === false) return null;
+    if (r?.ok === false) return decline(`coordinator refused pack: ${r.error || r.message || 'unknown'}`, { targets: targets.map((x) => x.id) });
     packSig.set(`${pool}:${role}`, sig);
-    return targets.map((x) => x.id);
-  } catch {
-    // An old coordinator, or too few sealable targets. Not fatal: the seat
-    // still signs, it just is not protected against this tab going away.
-    return null;
+    return { packed: true, role: Number(role), targets: targets.map((x) => x.id) };
+  } catch (e) {
+    // An old coordinator, or a piece that could not be sealed. Not fatal: the
+    // seat still signs, it just is not protected against this tab going away.
+    return decline(`pack failed: ${e?.message || e}`, { targets: targets.map((x) => x.id) });
   }
+}
+
+/**
+ * Tell the coordinator what packSeat decided. A seat that cannot pack is one
+ * closed tab from stranded, and only the holder tab knows why — so it says.
+ * Rate-limited per pool/role/reason; a healthy unchanged pack is not reported.
+ */
+const packReported = new Map();
+const PACK_REPORT_MS = 60000;
+
+export async function reportPack({ post, prefix, pool, signerId, result, client }) {
+  if (!result || result.unchanged) return;
+  const key = `${pool}:${result.role}:${result.packed ? 'ok' : result.reason}`;
+  const now = Date.now();
+  if (now - (packReported.get(key) || 0) < PACK_REPORT_MS) return;
+  packReported.set(key, now);
+  await post(`${prefix}_pack_report`, {
+    signerId,
+    role: result.role,
+    packed: !!result.packed,
+    reason: result.reason || null,
+    targets: result.targets || [],
+    need: result.need ?? null,
+    live: result.live ?? null,
+    client,
+  }).catch(() => null);
 }
 
 /**

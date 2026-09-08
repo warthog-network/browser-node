@@ -894,8 +894,10 @@ export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
   // seat survivable if this tab goes away; doing it here means a seat is only
   // ever unprotected for as long as it takes to birth and beat once.
   if (live?.userShareHex && (role === 1 || role === 2)) {
-    await (await preshare()).packSeat({
-      post: (action, body) => poolPost(api, { action, ...body }),
+    const ps = await preshare();
+    const post = (action, body) => poolPost(api, { action, ...body });
+    const packResult = await ps.packSeat({
+      post,
       prefix: 'eth3p',
       pool: 'eth',
       signerId,
@@ -920,7 +922,15 @@ export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
       orbit: r?.orbit?.live || [],
       orbitKeys: r?.orbitKeys || {},
       otherHolderId: role === 1 ? r?.holder2 : r?.holder1,
-    }).catch(() => null);
+    }).catch((e) => ({ packed: false, role, reason: `pack threw: ${e?.message || e}` }));
+    await ps.reportPack({
+      post,
+      prefix: 'eth3p',
+      pool: 'eth',
+      signerId,
+      result: packResult,
+      client: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
+    });
   }
 
   // Before contributing: a seat whose lease still reads as recovering gets
