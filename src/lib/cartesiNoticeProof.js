@@ -160,6 +160,131 @@ export async function validateNoticeOnL1({
   return { ok: true, dapp, rpcUrl };
 }
 
+/* ------------------------------------------------------------------------ */
+/* Rollups v2 (rollups-node 2.x, @cartesi/rollups 2.x contracts)             */
+/*                                                                          */
+/* An output's `raw_data` is the ABI-encoded Outputs.Notice(bytes) /        */
+/* Outputs.Voucher(address,uint256,bytes) call; the proof is                */
+/* (uint64 outputIndex, bytes32[] outputHashesSiblings) and exists only once */
+/* the epoch's claim is accepted. Application.validateOutput(bytes,proof)   */
+/* is a view that reverts on a bad proof and returns nothing on success.    */
+/* ------------------------------------------------------------------------ */
+
+function selectorOf(signature) {
+  return '0x' + keccakHex(new TextEncoder().encode(signature)).slice(0, 8);
+}
+
+export const NOTICE_SIGNATURE = 'Notice(bytes)';
+export const VOUCHER_SIGNATURE = 'Voucher(address,uint256,bytes)';
+export const DELEGATE_CALL_VOUCHER_SIGNATURE = 'DelegateCallVoucher(address,bytes)';
+export const VALIDATE_OUTPUT_ABI = 'validateOutput(bytes,(uint64,bytes32[]))';
+
+export const NOTICE_SELECTOR = selectorOf(NOTICE_SIGNATURE);
+export const VOUCHER_SELECTOR = selectorOf(VOUCHER_SIGNATURE);
+export const DELEGATE_CALL_VOUCHER_SELECTOR = selectorOf(DELEGATE_CALL_VOUCHER_SIGNATURE);
+
+export function validateOutputSelector() {
+  return selectorOf(VALIDATE_OUTPUT_ABI);
+}
+
+function stripHex(hex) {
+  return String(hex || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+}
+
+/** Outputs.Notice(bytes) raw_data → notice payload hex ('0x…'). null if not a Notice. */
+export function decodeNoticeRawData(rawDataHex) {
+  const h = stripHex(rawDataHex);
+  if (h.length < 8 + 64 + 64) return null;
+  if ('0x' + h.slice(0, 8) !== NOTICE_SELECTOR) return null;
+  const body = h.slice(8);
+  const offset = Number(BigInt('0x' + body.slice(0, 64)));
+  if (!Number.isFinite(offset) || offset * 2 + 64 > body.length) return null;
+  const lenPos = offset * 2;
+  const len = Number(BigInt('0x' + body.slice(lenPos, lenPos + 64)));
+  const start = lenPos + 64;
+  if (start + len * 2 > body.length) return null;
+  return '0x' + body.slice(start, start + len * 2);
+}
+
+/** Wrap a notice payload back into Outputs.Notice(bytes) raw_data. */
+export function encodeNoticeRawData(payloadHex) {
+  return NOTICE_SELECTOR + word(32) + encodeBytes(payloadHex);
+}
+
+export function outputHasProof(proof) {
+  if (!proof) return false;
+  if (proof.outputIndex == null) return false;
+  const sib = proof.outputHashesSiblings;
+  return Array.isArray(sib) && sib.length > 0 && sib.every((s) => /^(0x)?[0-9a-fA-F]{64}$/.test(String(s)));
+}
+
+/**
+ * calldata for Application.validateOutput(bytes output, OutputValidityProof proof).
+ * Both arguments are dynamic (bytes; a struct containing a bytes32[]), so the
+ * head is two offsets. Inside the struct the head is (uint64, offset to the
+ * array) and the array follows the struct head.
+ */
+export function encodeValidateOutputCall(rawDataHex, proof) {
+  const outputEnc = encodeBytes(rawDataHex);
+  const siblings = encodeBytes32Array(proof?.outputHashesSiblings || []);
+  // struct head: outputIndex, offset(array) = 2 words
+  const proofEnc = word(proof?.outputIndex ?? 0) + word(2 * 32) + siblings;
+  const offOutput = 64;
+  const offProof = 64 + outputEnc.length / 2;
+  return validateOutputSelector() + word(offOutput) + word(offProof) + outputEnc + proofEnc;
+}
+
+/**
+ * eth_call Application.validateOutput. Success = the call does not revert
+ * (result is `0x`). A revert / JSON-RPC error = proof rejected.
+ */
+export async function validateOutputOnL1({ rawDataHex, proof, app, rpcUrl = CARTESI_L1_RPC } = {}) {
+  if (!outputHasProof(proof)) {
+    return { ok: false, waiting: true, error: 'waiting for epoch claim (v2)' };
+  }
+  if (!/^0x[0-9a-fA-F]{40}$/.test(String(app || ''))) {
+    return { ok: false, waiting: false, error: 'rollups v2 app address missing' };
+  }
+  if (!stripHex(rawDataHex)) {
+    return { ok: false, waiting: false, error: 'output raw_data missing' };
+  }
+  const data = encodeValidateOutputCall(rawDataHex, proof);
+  let body;
+  try {
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'eth_call',
+        params: [{ to: app, data }, 'latest'],
+      }),
+    });
+    body = await res.json().catch(() => ({}));
+  } catch (e) {
+    return { ok: false, waiting: false, error: e?.message || 'validateOutput rpc failed' };
+  }
+  if (body.error) {
+    return {
+      ok: false,
+      waiting: false,
+      error: `validateOutput reverted: ${body.error.message || 'rpc error'}`,
+    };
+  }
+  if (!Object.prototype.hasOwnProperty.call(body, 'result')) {
+    return { ok: false, waiting: false, error: 'validateOutput: empty rpc response' };
+  }
+  // A view with no return value yields `0x`; anything else is not a success path.
+  const raw = String(body.result ?? '');
+  if (raw !== '0x' && raw !== '') {
+    return { ok: false, waiting: false, error: `validateOutput unexpected result ${raw.slice(0, 20)}` };
+  }
+  return { ok: true, app, rpcUrl, api: 'v2' };
+}
+
 export function ticketNeedsNoticeProof(ticketId, { labDemo } = {}) {
   const id = String(ticketId || '');
   if (!id) return false;
