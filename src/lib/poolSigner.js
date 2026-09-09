@@ -30,10 +30,19 @@ const API_OVERRIDE_KEY = 'wart.poolSigner.api';
 
 /**
  * Coordinator API. Normally the production coordinator; a tab can be pointed
- * at a staging coordinator (rollups v2 dev stack) with `?coordinator=<url>` —
- * remembered in localStorage — or cleared with `?coordinator=`. Never changes
- * anything for tabs that never used the parameter.
+ * at a staging / lab coordinator with `?coordinator=<url>` — remembered in
+ * localStorage — or cleared with `?coordinator=`. Never changes anything for
+ * tabs that never used the parameter.
+ *
+ * Override URLs may be `http://` or `https://` and must end in `/api/pool`
+ * (prod default stays `https://cartesi-bridge.duckdns.org/api/pool`). Browsers
+ * block mixed content: an https page cannot call an http lab coordinator —
+ * serve the signer over http for that lab, or put TLS on the coordinator.
  */
+export function isPoolApiOverride(url) {
+  return typeof url === 'string' && /^https?:\/\/[^\s]+\/api\/pool$/.test(url);
+}
+
 export function defaultPoolApi() {
   try {
     if (typeof location !== 'undefined') {
@@ -45,7 +54,7 @@ export function defaultPoolApi() {
       }
     }
     const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(API_OVERRIDE_KEY) : null;
-    if (saved && /^https:\/\/[^\s]+\/api\/pool$/.test(saved)) return saved;
+    if (saved && isPoolApiOverride(saved)) return saved;
   } catch {
     /* storage blocked — production coordinator */
   }
@@ -286,7 +295,7 @@ async function withRetry(fn, { tries = 3, delayMs = 400 } = {}) {
   throw last;
 }
 
-export async function fetchPool3pStatus(api = DEFAULT_POOL_API) {
+export async function fetchPool3pStatus(api = defaultPoolApi()) {
   return withRetry(() =>
     poolPost(api, { action: 'pool3p_status' }),
   );
@@ -297,7 +306,7 @@ export async function fetchPool3pStatus(api = DEFAULT_POOL_API) {
  * `GET ?threshold=1`, the Path A3 status with the 3P rooms merged in; A3 is
  * being pruned from the coordinator, so read the 3P view directly.
  */
-export async function fetchThresholdStatus(api = DEFAULT_POOL_API) {
+export async function fetchThresholdStatus(api = defaultPoolApi()) {
   const p3 = await fetchPool3pStatus(api);
   if (p3 && Object.prototype.hasOwnProperty.call(p3, 'rollups')) {
     // Which rollups stack the coordinator runs (v1 = absent). poolVerify
@@ -697,7 +706,7 @@ async function maybeBirthNextQ(share, api) {
   return born;
 }
 
-export async function enrollSigner(signerId, api = DEFAULT_POOL_API) {
+export async function enrollSigner(signerId, api = defaultPoolApi()) {
   const r = await withRetry(() =>
     poolPost(api, {
       action: 'threshold_enroll',
@@ -1189,7 +1198,7 @@ async function packNextSeat(share, api) {
 }
 
 
-export async function loadActiveShare(api = DEFAULT_POOL_API) {
+export async function loadActiveShare(api = defaultPoolApi()) {
   await storageRemove(SHARE_KEY);
   const signerId = await getOrCreateSignerId();
   return enrollSigner(signerId, api);
@@ -1254,7 +1263,7 @@ async function applyIncomingShare(raw, prev) {
   return share;
 }
 
-export async function heartbeat(share, api = DEFAULT_POOL_API) {
+export async function heartbeat(share, api = defaultPoolApi()) {
   if (is3pShare(share)) {
     const r = await withRetry(() =>
       poolPost(api, {
@@ -1770,7 +1779,7 @@ async function sign3pAsRole1(share, req, api) {
   }
 }
 
-export async function contributeOpen(share, api = DEFAULT_POOL_API) {
+export async function contributeOpen(share, api = defaultPoolApi()) {
   const st = await fetchThresholdStatus(api);
   const p3 = st.pool3p || (await fetchPool3pStatus(api).catch(() => null));
   const seen = new Set();

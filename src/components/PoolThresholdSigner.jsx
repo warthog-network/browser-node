@@ -12,7 +12,7 @@ import {
   writeEnabled,
   writePanelOpen,
   writeStats,
-  DEFAULT_POOL_API,
+  defaultPoolApi,
 } from '../lib/poolSigner.js';
 import { formatVerifyLine } from '../lib/poolVerify.js';
 import TestnetBridgeBadge, { TestnetBridgeScope } from './TestnetBridgeBadge.jsx';
@@ -300,8 +300,8 @@ export default function PoolThresholdSigner() {
         }
       }
       try {
-        setStatus(await fetchThresholdStatus(DEFAULT_POOL_API));
-        setPool3p(await fetchPool3pStatus(DEFAULT_POOL_API));
+        setStatus(await fetchThresholdStatus(defaultPoolApi()));
+        setPool3p(await fetchPool3pStatus(defaultPoolApi()));
       } catch {
         /* */
       }

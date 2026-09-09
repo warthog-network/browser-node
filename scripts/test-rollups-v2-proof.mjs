@@ -155,5 +155,44 @@ check('snapshot v2 notice → _api v2, proof bound to index', snapV2._api === 'v
 const snapV1 = normalizeSnapshotNotice({ ticketId: 'x', _proof: { validity: {}, context: '0x' }, _payloadHex: payload });
 check('snapshot v1 notice untouched', snapV1._api === undefined && snapV1._proof.validity);
 
+
+// --- ?coordinator= / defaultPoolApi override (http lab + https staging) ----
+{
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
+  delete globalThis.location;
+  const { DEFAULT_POOL_API, defaultPoolApi, isPoolApiOverride } = await import('../src/lib/poolSigner.js');
+
+  check('prod default is https …/api/pool', DEFAULT_POOL_API === 'https://cartesi-bridge.duckdns.org/api/pool');
+  check('isPoolApiOverride accepts http lab', isPoolApiOverride('http://217.216.94.146:4399/api/pool'));
+  check('isPoolApiOverride accepts https', isPoolApiOverride('https://staging.example/api/pool'));
+  check('isPoolApiOverride rejects wrong path', !isPoolApiOverride('http://217.216.94.146:4399/api/other'));
+  check('isPoolApiOverride rejects non-http(s)', !isPoolApiOverride('ftp://x/api/pool'));
+
+  store.clear();
+  check('no override → prod default', defaultPoolApi() === DEFAULT_POOL_API);
+
+  store.set('wart.poolSigner.api', 'http://217.216.94.146:4399/api/pool');
+  check('http lab override returned', defaultPoolApi() === 'http://217.216.94.146:4399/api/pool');
+
+  store.set('wart.poolSigner.api', 'https://staging.example/api/pool');
+  check('https staging override returned', defaultPoolApi() === 'https://staging.example/api/pool');
+
+  store.set('wart.poolSigner.api', 'http://evil.example/api/other');
+  check('bad path falls back to prod', defaultPoolApi() === DEFAULT_POOL_API);
+
+  globalThis.location = { search: '?coordinator=http://217.216.94.146:4399/api/pool' };
+  store.clear();
+  check('?coordinator=http saves and returns', defaultPoolApi() === 'http://217.216.94.146:4399/api/pool');
+  check('saved under wart.poolSigner.api', store.get('wart.poolSigner.api') === 'http://217.216.94.146:4399/api/pool');
+
+  globalThis.location = { search: '?coordinator=' };
+  check('?coordinator= clears override', defaultPoolApi() === DEFAULT_POOL_API && !store.has('wart.poolSigner.api'));
+}
+
 console.log(failed ? `\n${failed} check(s) failed` : '\nall rollups v2 proof checks passed');
 process.exit(failed ? 1 : 0);
