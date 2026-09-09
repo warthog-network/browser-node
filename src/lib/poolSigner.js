@@ -26,7 +26,29 @@ async function preshare() {
   return import('./preshareClient.js');
 }
 
+const API_OVERRIDE_KEY = 'wart.poolSigner.api';
+
+/**
+ * Coordinator API. Normally the production coordinator; a tab can be pointed
+ * at a staging coordinator (rollups v2 dev stack) with `?coordinator=<url>` —
+ * remembered in localStorage — or cleared with `?coordinator=`. Never changes
+ * anything for tabs that never used the parameter.
+ */
 export function defaultPoolApi() {
+  try {
+    if (typeof location !== 'undefined') {
+      const q = new URLSearchParams(location.search);
+      if (q.has('coordinator')) {
+        const v = String(q.get('coordinator') || '').trim();
+        if (v) localStorage.setItem(API_OVERRIDE_KEY, v);
+        else localStorage.removeItem(API_OVERRIDE_KEY);
+      }
+    }
+    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(API_OVERRIDE_KEY) : null;
+    if (saved && /^https:\/\/[^\s]+\/api\/pool$/.test(saved)) return saved;
+  } catch {
+    /* storage blocked — production coordinator */
+  }
   return DEFAULT_POOL_API;
 }
 
