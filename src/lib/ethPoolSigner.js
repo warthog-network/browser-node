@@ -2,7 +2,8 @@
  * ETH 3P signer (e1/e2). Separate storage from WART d1/d2 (wart.poolSigner.*).
  * Birth + heartbeat only here; ETH Lindell pay lands after wrap/unwrap tickets.
  */
-export const DEFAULT_POOL_API = 'https://cartesi-bridge.duckdns.org/api/pool';
+export { DEFAULT_POOL_API } from './poolApi.js';
+import { DEFAULT_POOL_API, defaultPoolApi } from './poolApi.js';
 import { CLIENT_VERSION } from './clientVersion.js';
 import { reportSignerSafety } from './signerSafety.js';
 
@@ -92,7 +93,7 @@ async function poolPost(api, body) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 20000);
   try {
-    const res = await fetch(api || DEFAULT_POOL_API, {
+    const res = await fetch(api || defaultPoolApi(), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
@@ -514,7 +515,7 @@ async function birthAndUploadSeat(signerId, role, api, hint) {
   return share;
 }
 
-export async function enrollEthSigner(api = DEFAULT_POOL_API) {
+export async function enrollEthSigner(api = defaultPoolApi()) {
   const signerId = await getOrCreateSignerId();
   const r = await poolPost(api, { action: 'eth3p_enroll', signerId });
   if (r.needBirth && (r.role === 1 || r.role === 2)) {
@@ -848,7 +849,7 @@ async function maybeBirthEthNext(share, api) {
   return born;
 }
 
-export async function heartbeatEth(share, api = DEFAULT_POOL_API) {
+export async function heartbeatEth(share, api = defaultPoolApi()) {
   const signerId = share?.signerId || (await getOrCreateSignerId());
   const r = await poolPost(api, {
     action: 'eth3p_heartbeat',
@@ -972,7 +973,7 @@ export async function loadActiveEthShare() {
   return enrollEthSigner();
 }
 
-export async function fetchEth3pStatus(api = DEFAULT_POOL_API) {
+export async function fetchEth3pStatus(api = defaultPoolApi()) {
   const st = await poolPost(api, { action: 'eth3p_status' });
   if (st && Object.prototype.hasOwnProperty.call(st, 'rollups')) {
     // Same rollups block as pool3p_status; inspect for local burn checks
