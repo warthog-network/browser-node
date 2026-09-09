@@ -1,8 +1,13 @@
 import {
   NOTICE_PROOF_GQL,
+  NOTICE_SELECTOR,
+  VOUCHER_SELECTOR,
+  decodeNoticeRawData,
   noticeHasProof,
+  outputHasProof,
   ticketNeedsNoticeProof,
   validateNoticeOnL1,
+  validateOutputOnL1,
 } from './cartesiNoticeProof.js';
 import {
   assertPoolPayoutCovered,
@@ -35,6 +40,57 @@ export const VERIFY_SNAPSHOT =
 
 export const MAX_SPV_LAG = 256;
 export const MIN_SPV_LAG = -8;
+
+/* ------------------------------------------------------------------------ */
+/* Rollups API selection                                                     */
+/*                                                                          */
+/* The coordinator advertises which rollups stack it runs in every snapshot */
+/* the signer already reads (`?verifyTicket=`, `pool3p_status`,             */
+/* `eth3p_status`):                                                         */
+/*   rollups: { api:'v2', app:'0x…', rpcUrl, inspectUrl, l1RpcUrl }         */
+/* Absent, or api !== 'v2', means Cartesi 1.5 (GraphQL + validateNotice),   */
+/* byte-for-byte today's behaviour. v2 = rollups-node 2.x: JSON-RPC reads   */
+/* (`cartesi_listOutputs`), POST inspect, Application.validateOutput.       */
+/* ------------------------------------------------------------------------ */
+
+export const V2_DEFAULTS = {
+  rpcUrl: 'https://cartesi-bridge.duckdns.org/v2/rpc',
+  inspectUrl: 'https://cartesi-bridge.duckdns.org/v2/inspect',
+  l1RpcUrl: 'https://cartesi-bridge.duckdns.org/rpc',
+};
+
+let rollupsInfo = null;
+
+export function normalizeRollups(info) {
+  if (!info || typeof info !== 'object') return null;
+  if (String(info.api || '').toLowerCase() !== 'v2') return null;
+  const app = String(info.app || info.appAddress || '');
+  if (!/^0x[0-9a-fA-F]{40}$/.test(app)) return null;
+  const trim = (u, d) => String(u || d).replace(/\/$/, '');
+  return {
+    api: 'v2',
+    app,
+    appName: info.appName || null,
+    rpcUrl: trim(info.rpcUrl, V2_DEFAULTS.rpcUrl),
+    inspectUrl: trim(info.inspectUrl, V2_DEFAULTS.inspectUrl),
+    l1RpcUrl: trim(info.l1RpcUrl, V2_DEFAULTS.l1RpcUrl),
+  };
+}
+
+/** Remember the coordinator's rollups block (any status/snapshot that carries one). */
+export function noteRollupsInfo(info) {
+  if (info === undefined) return rollupsInfo;
+  rollupsInfo = normalizeRollups(info);
+  return rollupsInfo;
+}
+
+export function currentRollups() {
+  return rollupsInfo;
+}
+
+export function isRollupsV2() {
+  return rollupsInfo?.api === 'v2';
+}
 
 function hexToUtf8(raw) {
   const s = String(raw || '');
@@ -148,6 +204,7 @@ export async function fetchInspectPool() {
   // signers do not lock Cartesi InspectState.
   try {
     const snap = await fetchJson(`${VERIFY_SNAPSHOT}1`);
+    if (snap && Object.prototype.hasOwnProperty.call(snap, 'rollups')) noteRollupsInfo(snap.rollups);
     if (snap?.inspect?.pool?.ok) {
       const value = {
         source: 'pool-snapshot',
@@ -164,12 +221,149 @@ export async function fetchInspectPool() {
   } catch {
     /* fall through to direct inspect */
   }
-  const raw = await fetchJson(ROLLUP_INSPECT);
+  const raw = isRollupsV2() ? await inspectV2('pool') : await fetchJson(ROLLUP_INSPECT);
   const pool = decodeInspectBody(raw);
   if (!pool?.ok) throw new Error('inspect/pool not ok');
-  const value = { source: 'rollup-inspect', raw, pool };
+  const value = { source: isRollupsV2() ? 'rollups-v2-inspect' : 'rollup-inspect', raw, pool };
   inspectCache = { at: Date.now(), value };
   return value;
+}
+
+/* ---- rollups v2 transport ------------------------------------------------ */
+
+/** v2 inspect: POST {inspectUrl}/{app} with the payload as the body. */
+async function inspectV2(payload) {
+  const r = rollupsInfo;
+  if (!r) throw new Error('rollups v2 not configured');
+  return fetchJson(`${r.inspectUrl}/${r.app}`, {
+    method: 'POST',
+    headers: { 'content-type': 'text/plain', accept: 'application/json' },
+    body: String(payload ?? ''),
+  });
+}
+
+/** v2 node JSON-RPC (`cartesi_*`, named params). */
+async function rpcV2(method, params) {
+  const r = rollupsInfo;
+  if (!r) throw new Error('rollups v2 not configured');
+  const body = await fetchJson(r.rpcUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: { application: r.app, ...params } }),
+  });
+  if (body?.error) {
+    throw new Error(`${method}: ${body.error.message || 'rpc error'}`);
+  }
+  return body?.result ?? null;
+}
+
+function toHexPayload(v) {
+  const s = String(v || '');
+  if (!s) return null;
+  return s.startsWith('0x') ? s : `0x${s}`;
+}
+
+/** One `cartesi_listOutputs` row → signer notice row, or null if it is not the ticket. */
+function noticeRowV2(row, ticketId) {
+  const rawData = toHexPayload(row?.raw_data);
+  const payloadHex = toHexPayload(row?.decoded_data?.payload) || decodeNoticeRawData(rawData);
+  if (!payloadHex) return null;
+  const obj = parseNoticePayload(payloadHex);
+  if (!obj || obj.type !== 'pool_release_ticket') return null;
+  if (String(obj.ticketId || '') !== String(ticketId)) return null;
+  const idx = Number(row.index ?? 0);
+  const siblings = Array.isArray(row.output_hashes_siblings) ? row.output_hashes_siblings : null;
+  const proof = siblings && siblings.length ? { outputIndex: idx, outputHashesSiblings: siblings } : null;
+  return {
+    ...obj,
+    _api: 'v2',
+    _index: idx,
+    _inputIndex: row.input_index != null ? Number(row.input_index) : null,
+    _epochIndex: row.epoch_index != null ? Number(row.epoch_index) : null,
+    _payloadHex: payloadHex,
+    _rawDataHex: rawData,
+    _proof: proof,
+    _hasProof: outputHasProof(proof),
+  };
+}
+
+const V2_PAGE = 100;
+
+/**
+ * v2 ticket → notice. With an input index (the burn's input) one filtered
+ * call answers; without it, walk outputs newest-first, the way v1 walks
+ * GraphQL notices. The proof rides on the row (siblings non-null once the
+ * epoch claim is accepted) — no second query.
+ */
+async function fetchReleaseNoticeV2(ticketId, { inputIndex = null } = {}) {
+  const id = String(ticketId || '').trim();
+  let best = null;
+  const hint = Number(inputIndex);
+  if (Number.isFinite(hint) && hint >= 0) {
+    const res = await rpcV2('cartesi_listOutputs', {
+      input_index: hint,
+      output_type: NOTICE_SELECTOR,
+      limit: V2_PAGE,
+    });
+    for (const row of res?.data || []) {
+      const n = noticeRowV2(row, id);
+      if (n && (!best || n._index >= best._index)) best = n;
+    }
+  }
+  if (!best) {
+    for (let page = 0; page < 20; page++) {
+      const res = await rpcV2('cartesi_listOutputs', {
+        output_type: NOTICE_SELECTOR,
+        descending: true,
+        limit: V2_PAGE,
+        offset: page * V2_PAGE,
+      });
+      const rows = res?.data || [];
+      for (const row of rows) {
+        const n = noticeRowV2(row, id);
+        if (n && (!best || n._index >= best._index)) best = n;
+      }
+      if (best || rows.length < V2_PAGE) break;
+    }
+  }
+  let voucherCount = 0;
+  try {
+    const v = await rpcV2('cartesi_listOutputs', {
+      output_type: VOUCHER_SELECTOR,
+      descending: true,
+      limit: 20,
+    });
+    voucherCount = Math.min(20, Number(v?.pagination?.total_count ?? (v?.data || []).length));
+  } catch {
+    /* informational */
+  }
+  return { source: 'rollups-v2-rpc', notice: best, voucherCount };
+}
+
+/**
+ * A coordinator snapshot notice can be v1-shaped (validity/context proof) or
+ * v2-shaped. Accept both spellings and mark the row so the L1 step picks
+ * validateOutput vs validateNotice.
+ */
+export function normalizeSnapshotNotice(n) {
+  if (!n || typeof n !== 'object') return n;
+  const rawData = n._rawDataHex || n.rawDataHex || n.rawData || null;
+  const proof = n._proof || n.proof || null;
+  const v2 = Boolean(rawData || proof?.outputHashesSiblings || n.api === 'v2' || n._api === 'v2');
+  if (!v2) return n;
+  const p = proof && proof.outputHashesSiblings
+    ? { outputIndex: proof.outputIndex ?? n._index ?? n.index, outputHashesSiblings: proof.outputHashesSiblings }
+    : null;
+  return {
+    ...n,
+    _api: 'v2',
+    _index: n._index ?? n.index ?? n.outputIndex ?? null,
+    _inputIndex: n._inputIndex ?? n.inputIndex ?? null,
+    _payloadHex: n._payloadHex || n.payloadHex || (rawData ? decodeNoticeRawData(rawData) : null),
+    _rawDataHex: rawData ? toHexPayload(rawData) : null,
+    _proof: p,
+    _hasProof: outputHasProof(p),
+  };
 }
 
 async function graphqlNoticesPage(cursor) {
@@ -208,8 +402,23 @@ function noticeRow(obj, node) {
   };
 }
 
-export async function fetchReleaseNotice(ticketId) {
+export async function fetchReleaseNotice(ticketId, opts = {}) {
   const id = String(ticketId || '').trim();
+  if (isRollupsV2()) {
+    try {
+      return await fetchReleaseNoticeV2(id, opts);
+    } catch (e) {
+      const gqlError = e?.message || String(e);
+      const snap = await fetchJson(`${VERIFY_SNAPSHOT}${encodeURIComponent(id)}`);
+      if (snap && Object.prototype.hasOwnProperty.call(snap, 'rollups')) noteRollupsInfo(snap.rollups);
+      return {
+        source: 'pool-snapshot',
+        notice: normalizeSnapshotNotice(snap.notice || null),
+        voucherCount: Number(snap.voucherCount || 0),
+        gqlError,
+      };
+    }
+  }
   try {
     let cursor = null;
     let best = null;
@@ -258,9 +467,10 @@ export async function fetchReleaseNotice(ticketId) {
     // otherwise reads as "epoch not claimed" when the real fault is the fetch.
     const gqlError = e?.message || String(e);
     const snap = await fetchJson(`${VERIFY_SNAPSHOT}${encodeURIComponent(id)}`);
+    if (snap && Object.prototype.hasOwnProperty.call(snap, 'rollups')) noteRollupsInfo(snap.rollups);
     return {
       source: 'pool-snapshot',
-      notice: snap.notice || null,
+      notice: normalizeSnapshotNotice(snap.notice || null),
       voucherCount: Number(snap.voucherCount || 0),
       gqlError,
     };
@@ -458,7 +668,7 @@ export function evaluateVerification({
 
 export async function verifyOpenRequest(req) {
   const inspect = await fetchInspectPool();
-  const gql = await fetchReleaseNotice(req.ticketId);
+  const gql = await fetchReleaseNotice(req.ticketId, { inputIndex: req.inputIndex ?? null });
   let wartHead = null;
   try {
     wartHead = await fetchIndependentHead({ allowVpsFallback: false });
@@ -470,12 +680,20 @@ export async function verifyOpenRequest(req) {
     notice &&
     ticketNeedsNoticeProof(req.ticketId, { labDemo: req.labDemo }) &&
     notice._hasProof &&
-    notice._payloadHex
+    (notice._api === 'v2' ? notice._rawDataHex : notice._payloadHex)
   ) {
-    const l1 = await validateNoticeOnL1({
-      payloadHex: notice._payloadHex,
-      proof: notice._proof,
-    });
+    const l1 =
+      notice._api === 'v2'
+        ? await validateOutputOnL1({
+            rawDataHex: notice._rawDataHex,
+            proof: notice._proof,
+            app: rollupsInfo?.app,
+            rpcUrl: rollupsInfo?.l1RpcUrl || V2_DEFAULTS.l1RpcUrl,
+          })
+        : await validateNoticeOnL1({
+            payloadHex: notice._payloadHex,
+            proof: notice._proof,
+          });
     notice._noticeProofOk = !!l1.ok;
     notice._noticeProofError = l1.error || null;
     if (!l1.ok && l1.error && !l1.waiting) {
@@ -499,7 +717,11 @@ export async function verifyOpenRequest(req) {
     );
   }
   if (gql.gqlError && notice && !notice._hasProof) {
-    ev.reasons.unshift(`rollup GraphQL failed — ${gql.gqlError}`);
+    ev.reasons.unshift(
+      gql.source === 'pool-snapshot' && isRollupsV2()
+        ? `rollups v2 rpc failed — ${gql.gqlError}`
+        : `rollup GraphQL failed — ${gql.gqlError}`,
+    );
   }
   const local = await verifyLocalForPayout({
     poolAddress: req.poolAddress,

@@ -277,6 +277,12 @@ export async function fetchPool3pStatus(api = DEFAULT_POOL_API) {
  */
 export async function fetchThresholdStatus(api = DEFAULT_POOL_API) {
   const p3 = await fetchPool3pStatus(api);
+  if (p3 && Object.prototype.hasOwnProperty.call(p3, 'rollups')) {
+    // Which rollups stack the coordinator runs (v1 = absent). poolVerify
+    // picks GraphQL/validateNotice vs JSON-RPC/validateOutput from this.
+    const { noteRollupsInfo } = await import('./poolVerify.js');
+    noteRollupsInfo(p3.rollups);
+  }
   const open = Array.isArray(p3?.open) ? p3.open : [];
   return {
     ok: p3?.ok !== false,
@@ -1850,6 +1856,8 @@ export async function contributeOpen(share, api = DEFAULT_POOL_API) {
           amountE8: req.amountE8,
           poolAddress: p3?.address || share.poolAddress || st.signers?.poolAddress,
           labDemo: Boolean(req.labDemo),
+          // v2: the burn's input index lets the notice lookup be one filtered call.
+          inputIndex: req.inputIndex ?? req.noticeInputIndex ?? null,
         });
         lastVerify = verify;
       }

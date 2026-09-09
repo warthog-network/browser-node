@@ -973,7 +973,14 @@ export async function loadActiveEthShare() {
 }
 
 export async function fetchEth3pStatus(api = DEFAULT_POOL_API) {
-  return poolPost(api, { action: 'eth3p_status' });
+  const st = await poolPost(api, { action: 'eth3p_status' });
+  if (st && Object.prototype.hasOwnProperty.call(st, 'rollups')) {
+    // Same rollups block as pool3p_status; inspect for local burn checks
+    // goes through poolVerify.fetchInspectPool, which branches on it.
+    const { noteRollupsInfo } = await import('./poolVerify.js');
+    noteRollupsInfo(st.rollups);
+  }
+  return st;
 }
 
 export function stopEthSigningLocal() {
