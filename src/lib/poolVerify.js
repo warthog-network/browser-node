@@ -301,7 +301,9 @@ async function fetchReleaseNoticeV2(ticketId, { inputIndex = null } = {}) {
   const hint = Number(inputIndex);
   if (Number.isFinite(hint) && hint >= 0) {
     const res = await rpcV2('cartesi_listOutputs', {
-      input_index: hint,
+      // rollups-node 2.x takes uint64 params as 0x-hex strings; a JSON number
+      // is "Invalid parameters" and silently forced the slow page walk below.
+      input_index: `0x${hint.toString(16)}`,
       output_type: NOTICE_SELECTOR,
       limit: V2_PAGE,
     });
