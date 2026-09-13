@@ -23,14 +23,31 @@ import {
 } from './sealedPreshare.js';
 import { getNodeIdentity, attest } from './nodeIdentity.js';
 
-/** Remember the target set a pack was built for, so we do not re-pack every beat. */
+/**
+ * Remember what the last pack was built for, so we do not re-pack every beat.
+ *
+ * The signature MUST include the seat key P. It used to be role + targets only,
+ * so after a Q rotation a holder that kept its role and saw the same orbit
+ * computed the same signature for a brand-new share, answered "unchanged", and
+ * never posted — while the coordinator had just dropped the old pack at
+ * cutover (its P no longer matched the live seat). Both live seats then sat
+ * sole-copy in their tabs until a tab happened to join or leave, or the holder
+ * reloaded (2026-09-13: two rotations in a row, 341 WART with no backup).
+ */
 const packSig = new Map();
 
-function sigOf(role, targets) {
-  return `${role}:${targets
+function sigOf(role, targets, P) {
+  return `${role}:${String(P || '')
+    .replace(/^0x/i, '')
+    .toLowerCase()}:${targets
     .map((t) => t.id)
     .sort()
     .join(',')}`;
+}
+
+/** Test hook: forget every remembered pack (a reload does the same). */
+export function resetPackCache() {
+  packSig.clear();
 }
 
 /**
@@ -56,6 +73,12 @@ export async function identityFields({ pool, role, seatEpoch, signerId }) {
  *
  * Returns the chosen targets, or null when nothing was done — no usable
  * targets, an unchanged target set, or a coordinator without the endpoint.
+ *
+ * `coordinatorHasPack`: what the coordinator's status says about THIS seat —
+ * `false` when it reports no pack for our P (dropped at cutover, store reset,
+ * restart), `true` when it holds one, `null` when unknown. `false` overrides
+ * the local "unchanged" memory: a pack the coordinator no longer has is not
+ * unchanged, whatever this tab remembers sending.
  */
 export async function packSeat({
   post,
@@ -68,6 +91,7 @@ export async function packSeat({
   orbit,
   orbitKeys,
   otherHolderId,
+  coordinatorHasPack = null,
   t = 2,
   max = 4,
 }) {
@@ -102,8 +126,10 @@ export async function packSeat({
     );
   }
 
-  const sig = sigOf(role, targets);
-  if (packSig.get(`${pool}:${role}`) === sig) {
+  const cacheKey = `${pool}:${role}`;
+  if (coordinatorHasPack === false) packSig.delete(cacheKey);
+  const sig = sigOf(role, targets, P);
+  if (packSig.get(cacheKey) === sig) {
     return { packed: true, unchanged: true, role: Number(role), targets: targets.map((x) => x.id) };
   }
 
@@ -111,7 +137,7 @@ export async function packSeat({
     const pack = await buildPack({ record, targets, t, aad: packAad({ pool, role, P }) });
     const r = await post(`${prefix}_preshare_put`, { signerId, role: Number(role), pack });
     if (r?.ok === false) return decline(`coordinator refused pack: ${r.error || r.message || 'unknown'}`, { targets: targets.map((x) => x.id) });
-    packSig.set(`${pool}:${role}`, sig);
+    packSig.set(cacheKey, sig);
     return { packed: true, role: Number(role), targets: targets.map((x) => x.id) };
   } catch (e) {
     // An old coordinator, or a piece that could not be sealed. Not fatal: the

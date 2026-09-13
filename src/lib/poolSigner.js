@@ -1136,6 +1136,13 @@ async function packCachedSeat(share, api, role, hex) {
   const P = await pointOfShare(hex);
   const ps = await preshare();
   const post = (action, body) => poolPost(api, { action, ...body });
+  // Does the coordinator hold a pack for THIS P right now? pool3p_status.packs
+  // describes the live seat (liveP, at). A live seat with no pack on file must
+  // re-pack even if this tab remembers posting one — cutover dropped it.
+  const view = st?.packs?.[String(role)] || null;
+  const viewP = compactPointHex(view?.liveP || '');
+  const coordinatorHasPack =
+    view && viewP && viewP === compactPointHex(P) ? view.at != null || !!view.ready : null;
   const result = await ps
     .packSeat({
       post,
@@ -1148,6 +1155,7 @@ async function packCachedSeat(share, api, role, hex) {
       orbit: st?.orbit?.live || [],
       orbitKeys: st?.orbitKeys || {},
       otherHolderId: Number(role) === 1 ? st?.holder2 : st?.holder1,
+      coordinatorHasPack,
     })
     .catch((e) => ({ packed: false, role: Number(role), reason: `pack threw: ${e?.message || e}` }));
   await ps.reportPack({
