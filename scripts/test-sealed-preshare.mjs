@@ -170,5 +170,55 @@ check(
 );
 check('members without a published key are dropped', chooseTargets({ orbit: ['node-x'], pubKeys: {} }).length === 0);
 
+// --- the "unchanged" memory must notice a new seat key --------------------
+// 2026-09-13: after a Q rotation both holders kept their role and saw the same
+// orbit, so packSeat's role+targets signature matched and neither re-packed.
+// The coordinator had dropped the old packs at cutover; 341 WART sat sole-copy.
+{
+  const { packSeat, resetPackCache } = await import('../src/lib/preshareClient.js');
+  resetPackCache();
+  const posts = [];
+  const post = async (action, body) => {
+    posts.push({ action, body });
+    return { ok: true };
+  };
+  const orbit = [...m.map((x) => x.id), 'node-self', 'node-other'];
+  const base = {
+    post,
+    prefix: 'pool3p',
+    pool: 'wart',
+    signerId: 'node-self',
+    role: 1,
+    record: { userShareHex: 'ef'.repeat(32), role: 1, scheme: 'wart-3p-ecdsa-lindell-v1' },
+    orbit,
+    orbitKeys: pubKeys,
+    otherHolderId: 'node-other',
+  };
+  const P_a = '02' + '11'.repeat(32);
+  const P_b = '02' + '22'.repeat(32);
+
+  const first = await packSeat({ ...base, P: P_a });
+  check('first pack for a seat is posted', first.packed && !first.unchanged && posts.length === 1);
+  const again = await packSeat({ ...base, P: P_a });
+  check('same seat, same orbit: not re-posted', again.unchanged === true && posts.length === 1);
+  const rotated = await packSeat({ ...base, P: P_b });
+  check(
+    'a new seat key re-packs even with the same orbit',
+    rotated.packed && !rotated.unchanged && posts.length === 2,
+    'this is the post-cutover case that used to be skipped',
+  );
+  const dropped = await packSeat({ ...base, P: P_b, coordinatorHasPack: false });
+  check(
+    'coordinator reporting no pack overrides the local memory',
+    dropped.packed && !dropped.unchanged && posts.length === 3,
+  );
+  const held = await packSeat({ ...base, P: P_b, coordinatorHasPack: true });
+  check('coordinator holding the pack keeps it unchanged', held.unchanged === true && posts.length === 3);
+  check(
+    'the pack AAD names the new seat key',
+    String(posts[1].body.pack.aad || '').toLowerCase().includes(`p=${P_b}`),
+  );
+}
+
 console.log(failures ? `\n${failures} failing case(s)` : '\nall cases passed');
 process.exit(failures ? 1 : 0);

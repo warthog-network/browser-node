@@ -931,6 +931,10 @@ export async function heartbeatEth(share, api = defaultPoolApi()) {
       orbit: r?.orbit?.live || [],
       orbitKeys: r?.orbitKeys || {},
       otherHolderId: role === 1 ? r?.holder2 : r?.holder1,
+      // eth3p_status.packs[role].live is false when the coordinator holds no
+      // pack for the live seat (e.g. dropped at cutover): re-pack regardless of
+      // what this tab remembers sending.
+      coordinatorHasPack: r?.packs?.[String(role)] ? !!r.packs[String(role)].live : null,
     }).catch((e) => ({ packed: false, role, reason: `pack threw: ${e?.message || e}` }));
     await ps.reportPack({
       post,
