@@ -53,6 +53,31 @@ function seatLabel(share) {
   return 'orbit';
 }
 
+/** Lab Cartesi epoch is 3s. Keep the extension clock moving between server polls. */
+function useRotateDue(rotation) {
+  const [due, setDue] = useState(
+    rotation?.dueInEpochs == null ? null : Number(rotation.dueInEpochs),
+  );
+  const snap = useRef({
+    due: rotation?.dueInEpochs,
+    at: Date.now(),
+  });
+  useEffect(() => {
+    snap.current = { due: rotation?.dueInEpochs, at: Date.now() };
+    setDue(rotation?.dueInEpochs == null ? null : Number(rotation.dueInEpochs));
+  }, [rotation?.dueInEpochs, rotation?.block, rotation?.phase]);
+  useEffect(() => {
+    const id = setInterval(() => {
+      const s = snap.current;
+      if (s.due == null || !Number.isFinite(Number(s.due))) return;
+      const slipped = Math.floor((Date.now() - s.at) / 3000);
+      setDue(Math.max(0, Number(s.due) - slipped));
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+  return due;
+}
+
 export default function EthPoolThresholdSigner() {
   const [share, setShare] = useState(null);
   const [enabled, setEnabled] = useState(false);
@@ -90,17 +115,15 @@ export default function EthPoolThresholdSigner() {
       if (cancelled) return;
       setEnabled(on);
       setPanelOpen(open);
+      setReady(true);
       if (!on) {
         stopEthSigningLocal();
-        setReady(true);
         return;
       }
       try {
         await join();
       } catch (e) {
         if (!cancelled) setError(e?.message || String(e));
-      } finally {
-        if (!cancelled) setReady(true);
       }
     })();
     return () => {
@@ -212,6 +235,9 @@ export default function EthPoolThresholdSigner() {
     setPanelOpen(next);
   };
 
+  const rotateDue = useRotateDue(eth3p?.rotation);
+  const ethPhase = eth3p?.rotation?.phase || 'idle';
+  const ethClock = eth3p?.rotation?.clock;
   const liveN = eth3p?.orbit?.liveCount || 0;
   const openRoom = (eth3p?.open || []).find((t) => t.status !== 'paid') || null;
   const showPaid = !openRoom && Date.now() < signedUntil.current && eth3p?.lastPaid;
@@ -396,22 +422,36 @@ export default function EthPoolThresholdSigner() {
           <p className="pool-signer__meta">
             {eth3p?.address ? `ETH Q ${eth3p.address}` : 'Waiting for e1 + e2 birth'}
             {eth3p?.burnBin ? ` · burn bin ${shortId(eth3p.burnBin)}` : ''}
-            {eth3p?.rotation
-              ? ` · rotate ${eth3p.rotation.phase || 'idle'} · ${eth3p.rotation.dueInEpochs ?? '—'} epochs` +
-                (eth3p.rotation.intervalEpochs
-                  ? ` / ${eth3p.rotation.intervalEpochs}`
-                  : '') +
-                (eth3p.rotation.next?.needBirth?.[1] || eth3p.rotation.next?.needBirth?.['1']
-                  ? ' · need next e1'
-                  : '') +
-                (eth3p.rotation.next?.needBirth?.[2] || eth3p.rotation.next?.needBirth?.['2']
-                  ? ' · need next e2'
-                  : '') +
-                (eth3p.rotation.next?.address
-                  ? ` · next ${String(eth3p.rotation.next.address).slice(0, 10)}…`
-                  : '')
-              : ''}
           </p>
+          {eth3p?.rotation || rotateDue != null ? (
+            <p className="pool-signer__rotate">
+              e1/e2 rotate {ethPhase}
+              {ethClock === 'waiting-seal'
+                ? ' · waiting for e1+e2 birth'
+                : ethClock === 'rotating' || ethPhase !== 'idle'
+                  ? ' · in progress'
+                  : rotateDue != null
+                    ? ` · ${rotateDue} epochs left`
+                    : ''}
+              {eth3p?.rotation?.intervalEpochs
+                ? ` / ${eth3p.rotation.intervalEpochs}`
+                : ''}
+              {eth3p?.rotation?.next?.needBirth?.[1] || eth3p?.rotation?.next?.needBirth?.['1']
+                ? ' · need next e1'
+                : ''}
+              {eth3p?.rotation?.next?.needBirth?.[2] || eth3p?.rotation?.next?.needBirth?.['2']
+                ? ' · need next e2'
+                : ''}
+              {eth3p?.rotation?.next?.address
+                ? ` · next ${String(eth3p.rotation.next.address).slice(0, 10)}…`
+                : ''}
+              {eth3p?.rotation?.lastError
+                ? ` · ${String(eth3p.rotation.lastError).slice(0, 72)}`
+                : ''}
+            </p>
+          ) : (
+            <p className="pool-signer__rotate">e1/e2 rotate · waiting for coordinator clock</p>
+          )}
           <p className="pool-signer__meta">{log}</p>
           <ul className="pool-signer__slots" aria-label="live ETH orbit">
             {(eth3p?.orbit?.live || []).length === 0 ? (

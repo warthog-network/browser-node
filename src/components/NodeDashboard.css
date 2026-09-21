@@ -678,6 +678,11 @@
   word-break: break-word;
 }
 
+.pool-signer--eth .pool-signer__rotate {
+  border-color: rgba(154, 168, 255, 0.16);
+  background: rgba(154, 168, 255, 0.1);
+}
+
 .pool-signer__slots {
   list-style: none;
   margin: 0.65rem 0 0;
