@@ -571,24 +571,11 @@ async function contributeEthOpen(share, open, api) {
     const id = String(req.ticketId || '');
     if (!id || req.status === 'paid') continue;
     const kind = String(req.kind || '');
-    if (kind.startsWith('rotate') || id.startsWith('eth-rotate')) {
-      const { verifyLocalForPayout } = await import('./localWartChain.js');
-      const { fetchInspectPool } = await import('./poolVerify.js');
-      const inspect = await fetchInspectPool().catch(() => null);
-      const local = await verifyLocalForPayout({
-        amountE8: req.amountE8,
-        poolAddress: req.poolAddress || st?.address,
-        spv: inspect?.pool?.spv,
-      });
-      if (local.skipped || !local.ok) {
-        console.warn(
-          '[eth3p local-burn]',
-          id,
-          (local.reasons || []).join('; ') || 'local WASM/SPV check failed',
-        );
-        continue;
-      }
-    } else {
+    // ETH rotate-sweep is an Anvil transfer of the live 3P EOA, not a Warthog
+    // payout. verifyLocalForPayout() is WART SPV + WART balance; it skip/fails
+    // here and the e2 tab never posts (room sits on wait_d2).
+    const isEthRotate = kind.startsWith('rotate') || id.startsWith('eth-rotate');
+    if (!isEthRotate) {
       try {
         const { verifyLocalEthBurn } = await import('./localWartChain.js');
         const { fetchInspectPool } = await import('./poolVerify.js');
