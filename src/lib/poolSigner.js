@@ -1892,7 +1892,7 @@ export async function contributeOpen(share, api = defaultPoolApi()) {
   ];
   const results = [];
   let lastVerify = null;
-  const { verifyOpenRequest, probeMachineHealth, fetchInspectPool } = await import(
+  const { verifyOpenRequest, probeMachineHealth, fetchInspectPool, fetchHttpDefiBalanceE8 } = await import(
     './poolVerify.js'
   );
   if (actionable.length === 0) {
@@ -1914,7 +1914,7 @@ export async function contributeOpen(share, api = defaultPoolApi()) {
     let verify;
     try {
       if (/^wart-pool-rotate-/.test(String(req.ticketId || ''))) {
-        const { isLocalDefiNodeLive, verifyLocalForPayout } = await import(
+        const { isLocalDefiNodeLive, verifyLocalForPayout, assertPoolPayoutCovered } = await import(
           './localWartChain.js'
         );
         // Sweep pays from the live Q, not this tab's next-Q birth cache.
@@ -1926,24 +1926,44 @@ export async function contributeOpen(share, api = defaultPoolApi()) {
           amountE8: req.amountE8,
           spv: inspect?.pool?.spv,
         });
-        const wasmOk = isLocalDefiNodeLive() && local.ok && !local.skipped;
+        let covered = isLocalDefiNodeLive() && local.ok && !local.skipped;
+        let coverSrc = covered ? 'local-wasm' : local.source || null;
+        // After a tab reload the DeFi WASM triad is often not started yet.
+        // User burns already HTTP-cover that skip; rotate-sweeps used to
+        // hard-require WASM and sat unsigned (d1+d2 skip) for tens of minutes.
+        if (!covered && local.skipped && poolAddress && req.amountE8 != null) {
+          const inspectAddr = String(
+            inspect?.pool?.poolAddress || inspect?.poolAddress || '',
+          ).toLowerCase();
+          if (inspectAddr && inspectAddr === String(poolAddress).toLowerCase()) {
+            try {
+              const httpBal = await fetchHttpDefiBalanceE8(poolAddress);
+              assertPoolPayoutCovered(httpBal.free, req.amountE8, poolAddress);
+              covered = true;
+              coverSrc = 'defi-http';
+              local.reasons = [];
+            } catch (e) {
+              local.reasons = [...(local.reasons || []), e?.message || String(e)];
+            }
+          }
+        }
         lastVerify = {
-          ok: wasmOk,
+          ok: covered,
           rotationSweep: true,
           checks: {
             inspect: true,
-            localChain: wasmOk,
+            localChain: covered,
             noticeProof: true,
-            spv: !!local.ancestry,
+            spv: !!local.ancestry || coverSrc === 'defi-http',
           },
-          local,
+          local: { ...local, skipped: !covered && local.skipped, source: coverSrc || local.source },
           wartHead: local.head
             ? { height: local.head.height, hash: local.head.hash, source: 'local-wasm' }
             : null,
           machine: inspect?.pool?.spv
             ? { bestHeight: inspect.pool.spv.bestHeight, bestHash: inspect.pool.spv.bestHash }
             : null,
-          reasons: wasmOk
+          reasons: covered
             ? []
             : local.reasons || ['DeFi WASM node not running — start the full node to sign'],
         };
