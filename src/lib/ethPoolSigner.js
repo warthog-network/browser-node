@@ -14,6 +14,14 @@ const SHARE_KEY = 'eth.poolSigner.enrolledShare';
 
 let liveShare = null;
 
+function runningNetworkId() {
+  try {
+    return window.__wartRunningNetworkId || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Sealed-preshare helpers, loaded on demand like the other crypto in this file.
  * Keeps ECIES + Shamir out of the bundle for nodes that never hold a seat.
@@ -764,6 +772,8 @@ async function maybeBirthEthNext(share, api) {
     signerId: share.signerId,
     role,
     P: seat.P,
+    network: runningNetworkId(),
+    client: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
   };
   if (role === 1) {
     const zk = await import('./lindellZk.js');
@@ -856,6 +866,8 @@ export async function heartbeatEth(share, api = defaultPoolApi()) {
     signerId,
     seatEpoch: share?.seatEpoch ?? 0,
     clientVersion: CLIENT_VERSION,
+    network: runningNetworkId(),
+    client: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
     // Publishes this node's public key (so others can seal pieces to it) and a
     // signed presence claim. Best-effort: an old coordinator ignores both.
     ...(await (await preshare()).identityFields({

@@ -221,18 +221,21 @@ async function poolPost(api, body) {
 const skipReported = new Map();
 const SKIP_REPORT_MS = 60000;
 
+function runningNetworkId() {
+  try {
+    return window.__wartRunningNetworkId || null;
+  } catch {
+    return null;
+  }
+}
+
 async function reportSkip(api, share, req, verify) {
   const reasons = (verify?.reasons || []).map((r) => String(r).slice(0, 160)).slice(0, 6);
   const key = `${req.ticketId}|${reasons.join(';')}`;
   const now = Date.now();
   if (now - (skipReported.get(key) || 0) < SKIP_REPORT_MS) return;
   skipReported.set(key, now);
-  let network = null;
-  try {
-    network = window.__wartRunningNetworkId || null;
-  } catch {
-    /* */
-  }
+  const network = runningNetworkId();
   await poolPost(api, {
     action: 'pool3p_skip',
     signerId: share?.signerId,
@@ -588,6 +591,8 @@ async function maybeBirthNextQ(share, api) {
     signerId: share.signerId,
     role,
     P: seat.P,
+    network: runningNetworkId(),
+    client: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
   };
   if (role === 1) {
     const zk = await import('./lindellZk.js');
@@ -617,6 +622,26 @@ async function maybeBirthNextQ(share, api) {
     seat.paillierG = pk.g.toString();
   }
   body.pok = schnorrProveDlog(seat.userShareHex, seatPokContext('birth-next', role, seat.P));
+  /**
+   * Persist BEFORE the first network call. The coordinator records the seat
+   * on pool3p_birth_next / pool3p_pdl_finish; if the ack never reaches this
+   * tab (throttled extension page, dropped fetch) the share and its Paillier
+   * private key used to die in this closure while the server already trusted
+   * P — Q 9143e026… (2026-09-18) lost d1 exactly that way and froze 234.8 WART.
+   * The post-ack write below overwrites this record with poolAddress/seal.
+   */
+  writeNextBornCache({
+    ...seat,
+    scheme: 'wart-3p-ecdsa-lindell-v1',
+    role,
+    shareIndex: role,
+    signerId: share.signerId,
+    userShareHex: seat.userShareHex,
+    clientBorn: true,
+    nextQ: true,
+    provisional: true,
+    message: `next Q d${role} born — awaiting coordinator ack`,
+  });
   let ack = await poolPost(api, body);
   if (role === 1 && ack?.needPdl) {
     const zk = await import('./lindellZk.js');
@@ -898,6 +923,19 @@ async function birthAndUploadSeat(signerId, role, api, hint) {
     seat.paillierG = pk.g.toString();
   }
   body.pok = schnorrProveDlog(seat.userShareHex, seatPokContext('birth', role, seat.P));
+  // Same rule as the next-Q birth: the share must be on disk before the
+  // coordinator can learn P, or a lost ack strands the seat (see above).
+  writeBornCache({
+    ...seat,
+    scheme: 'wart-3p-ecdsa-lindell-v1',
+    role: Number(role),
+    shareIndex: Number(role),
+    signerId,
+    userShareHex: seat.userShareHex,
+    clientBorn: true,
+    provisional: true,
+    message: `d${role} born — awaiting coordinator ack`,
+  });
   let ack = await poolPost(api, body);
   if (Number(role) === 1 && ack?.needPdl) {
     const zk = await import('./lindellZk.js');
@@ -1247,6 +1285,8 @@ export async function heartbeat(share, api = defaultPoolApi()) {
         signerId: share.signerId,
         seatEpoch: share.seatEpoch,
         clientVersion: CLIENT_VERSION,
+        network: runningNetworkId(),
+        client: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
         // Public key so other seats can seal pieces to this node, plus a signed
         // presence claim. Ignored by a coordinator that has not deployed these.
         ...(pendingIdentityFields || {}),
@@ -1470,7 +1510,57 @@ export async function heartbeat(share, api = defaultPoolApi()) {
 
 const k1ByTicket = new Map();
 const fatalTickets = new Map();
+const r1RetryAt = new Map();
+const R1_RETRY_COOLDOWN_MS = 15000;
 const K1_STORE = 'wart.poolSigner.k1.';
+
+function normPt(h) {
+  return String(h || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+}
+
+function k1MatchesRound(k1, st) {
+  if (!k1?.k1Hex) return false;
+  const th = normPt(st?.hashHex);
+  const kh = normPt(k1.hashHex);
+  if (th && kh && th !== kh) return false;
+  const tR = normPt(st?.R1Hex);
+  const kR = normPt(k1.R1Hex);
+  if (tR && kR && tR !== kR) return false;
+  return true;
+}
+
+/**
+ * Drop a finish-ready R1 this tab cannot submit. Do not wipe a round another
+ * live tab posted and may still finish (fresh pin).
+ */
+async function retryDeadR1IfNeeded(ready, req, st, api, live) {
+  if (!st || st.txHash || st.payout?.txHash || st.status === 'paid') return st;
+  if (!(st.haveR1 || st.hasPartial)) return st;
+  const sid = ready?.signerId;
+  const holder1 = live?.holder1 || st?.members?.d1?.signerId || null;
+  if (!sid || holder1 !== sid) return st;
+  const k1 = loadK1(req.ticketId);
+  const mine = k1MatchesRound(k1, st);
+  const pinDead = st.prepPinStale === true;
+  if (mine && !pinDead) return st;
+  const posted = st.r1SignerId || null;
+  const liveIds = (live?.orbit?.live || []).map(String);
+  const selfPosted = !posted || posted === sid;
+  const postedGone = !!(posted && liveIds.length && !liveIds.includes(posted));
+  if (!mine && !selfPosted && !postedGone && !pinDead) return st;
+  const now = Date.now();
+  if (now - (r1RetryAt.get(req.ticketId) || 0) < R1_RETRY_COOLDOWN_MS) return st;
+  r1RetryAt.set(req.ticketId, now);
+  dropK1(req.ticketId);
+  await poolPost(api, {
+    action: 'pool3p_reset_r1',
+    ticketId: req.ticketId,
+    signerId: sid,
+  });
+  return poolPost(api, { action: 'pool3p_ticket', ticketId: req.ticketId });
+}
 
 function persistK1(ticketId, k1) {
   if (!ticketId || !k1) return;
@@ -1660,8 +1750,10 @@ async function sign3pAsRole1(share, req, api) {
     dropK1(req.ticketId);
     k1 = null;
   }
+  st = await retryDeadR1IfNeeded(ready, req, st, api, live);
+  k1 = loadK1(req.ticketId);
   if (!k1 && (st.haveR1 || st.hasPartial)) {
-    // Wait for the tab that posted R1. Do not wipe a live Lindell transcript.
+    // Another live tab posted this R1 and may still hold k1. Wait.
     return {
       ok: true,
       waiting: true,

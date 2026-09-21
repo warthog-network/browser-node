@@ -135,12 +135,14 @@ export default function PoolThresholdSigner() {
       setEnabled(on);
       setPanelOpen(open);
       setStats(st);
+      // Clickable before coordinator join — a hung /api/pool used to leave
+      // Signing disabled for a minute (enroll+status retry).
+      setReady(true);
       if (!on) {
         stopSigningLocal();
         setShare(null);
         setPhase('paused');
         putLog('signing off — this tab is a node only until you opt in');
-        setReady(true);
         return;
       }
       try {
@@ -151,8 +153,6 @@ export default function PoolThresholdSigner() {
           setError(e?.message || String(e));
           putLog('could not join 3P orbit');
         }
-      } finally {
-        if (!cancelled) setReady(true);
       }
     })();
     return () => {
