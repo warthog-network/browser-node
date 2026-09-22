@@ -15,6 +15,33 @@ export const CLIENT_BUILT_AT =
 export const EXTENSION_ZIP_URL = 'https://browser-node.netlify.app/downloads/warthog_node_extension.zip';
 const CHECK_MS = 5 * 60 * 1000;
 const RELOADED_KEY = 'wart.clientVersion.reloadedFor';
+/** '0' turns auto-reload off. Missing means on, which is the historical behavior. */
+export const AUTO_RELOAD_KEY = 'wart.clientVersion.autoReload';
+
+export function autoReloadFromStored(value) {
+  if (value == null || value === '') return true;
+  return value !== '0' && value !== 'false';
+}
+
+export function autoReloadEnabled() {
+  try {
+    if (typeof localStorage === 'undefined') return true;
+    return autoReloadFromStored(localStorage.getItem(AUTO_RELOAD_KEY));
+  } catch {
+    return true;
+  }
+}
+
+export function setAutoReloadEnabled(on) {
+  try {
+    localStorage.setItem(AUTO_RELOAD_KEY, on ? '1' : '0');
+  } catch {
+    /* */
+  }
+  state.autoReload = !!on;
+  if (!on) state.reloadBlockedBy = null;
+  emit();
+}
 
 export function isExtensionPage() {
   return typeof chrome !== 'undefined' && !!chrome.runtime?.id;
@@ -28,6 +55,7 @@ const state = {
   checkedAt: 0,
   error: null,
   reloadBlockedBy: null,
+  autoReload: true,
 };
 const listeners = new Set();
 function emit() {
@@ -40,6 +68,7 @@ function emit() {
   }
 }
 export function getUpdateState() {
+  state.autoReload = autoReloadEnabled();
   return { ...state };
 }
 export function subscribeUpdateState(fn) {
@@ -102,6 +131,15 @@ export function startUpdateWatcher({ isSafeToReload = () => true, intervalMs = C
       emit();
       return;
     }
+    if (!autoReloadEnabled()) {
+      state.autoReload = false;
+      if (state.reloadBlockedBy) {
+        state.reloadBlockedBy = null;
+        emit();
+      }
+      return;
+    }
+    state.autoReload = true;
     const why = isSafeToReload();
     if (why === true) {
       markReloadedFor(st.latest);

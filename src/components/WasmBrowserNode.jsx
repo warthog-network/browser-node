@@ -20,9 +20,15 @@ import {
   NODE_NETWORK_LIST,
   defaultWsPeersForNetwork,
   getNodeNetwork,
+  autoResumeLockedRecently,
+  forgetNodeRunning,
+  markAutoResumeStarted,
   persistNodeNetworkId,
   peersStorageKey,
+  rememberNodeRunning,
+  rememberedRunningNetwork,
   resolveNodeNetworkId,
+  shouldAutoResume,
 } from '../lib/nodeNetworks.js';
 import {
   isLocalDevHost,
@@ -420,6 +426,7 @@ export default function WasmBrowserNode() {
 
   const handleOpfsReadonly = useCallback((sourceText) => {
     markOpfsNeedsReset();
+    forgetNodeRunning();
     storageFatalRef.current = true;
     setStorageFatal(true);
     setRunning(false);
@@ -443,6 +450,7 @@ export default function WasmBrowserNode() {
   /** WASM linear memory hit MAXIMUM_MEMORY — sync cannot continue in this runtime. */
   const handleWasmOom = useCallback((sourceText) => {
     if (memoryFatalRef.current) return;
+    forgetNodeRunning();
     memoryFatalRef.current = true;
     setMemoryFatal(true);
     setRunning(false);
@@ -472,6 +480,7 @@ export default function WasmBrowserNode() {
    * incomplete multi‑GB write. (emsdk 3.1.74+ has i64 OPFS offsets — not a 2 GiB wall.)
    */
   const handleSqliteDiskIo = useCallback((sourceText) => {
+    forgetNodeRunning();
     setRunning(false);
     startedRef.current = false;
     try {
@@ -714,6 +723,7 @@ export default function WasmBrowserNode() {
     if (starting || stopping || clearingOpfs) return;
     setClearingOpfs(true);
     setError(null);
+    forgetNodeRunning();
     startedRef.current = false;
     setRunning(false);
     markOpfsNeedsReset();
@@ -740,6 +750,7 @@ export default function WasmBrowserNode() {
    */
   const stop = async () => {
     if (!running || starting || stopping || clearingOpfs) return;
+    forgetNodeRunning();
     setStopping(true);
     setError(null);
     setStatus('Stopping…');
@@ -836,6 +847,7 @@ export default function WasmBrowserNode() {
 
   const start = async () => {
     if (startedRef.current || starting || stopping || storageFatal || storageFatalRef.current) return;
+    rememberNodeRunning(network.id);
     setStarting(true);
     setError(null);
     storageFatalRef.current = false;
@@ -935,11 +947,13 @@ export default function WasmBrowserNode() {
       // If SQLite already failed during init, do not paint healthy "running".
       // (print → handleOpfsReadonly may have fired; state is async — use ref.)
       if (storageFatalRef.current) {
+        forgetNodeRunning();
         appendLog('Runtime returned but storage is fatal — use Recover, do not trust peer state');
         setStatus('OPFS / SQLite write failed — use Recover');
         setRunning(false);
         startedRef.current = false;
       } else if (memoryFatalRef.current) {
+        forgetNodeRunning();
         appendLog('Runtime returned but WASM heap is exhausted — do not trust peer/chain state');
         setStatus('WASM out of memory — heap limit reached');
         setRunning(false);
@@ -965,12 +979,39 @@ export default function WasmBrowserNode() {
         setStatus('Failed to start');
       }
       appendLog(`ERROR: ${msg}`);
+      forgetNodeRunning();
       startedRef.current = false;
       setRunning(false);
     } finally {
       setStarting(false);
     }
   };
+
+  const startRef = useRef(start);
+  startRef.current = start;
+
+  // A reload (including the update watcher) drops the WASM runtime. If this
+  // tab's node was on, start that same network again once Start is allowed.
+  useEffect(() => {
+    if (!canStart) return;
+    let resetDb = false;
+    try {
+      resetDb = new URLSearchParams(window.location.search).has('resetDb');
+    } catch {
+      resetDb = false;
+    }
+    if (!shouldAutoResume({
+      remembered: rememberedRunningNetwork(),
+      networkId,
+      canStart: true,
+      resetDb,
+      opfsReset: opfsNeedsReset(),
+      lockedRecently: autoResumeLockedRecently(),
+    })) return;
+    markAutoResumeStarted();
+    appendLog('Node was on before this reload — starting it again');
+    startRef.current?.();
+  }, [canStart, networkId, appendLog]);
 
   const browserReady = isolated && sab && opfsOk;
   const badgeClass = storageFatal || memoryFatal

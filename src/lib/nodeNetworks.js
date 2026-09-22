@@ -108,6 +108,71 @@ export function persistNodeNetworkId(id) {
   }
 }
 
+/** Set while the full node is up so a reload can start the same network again. */
+export const NODE_WAS_RUNNING_KEY = 'wart.node.wasRunning';
+const AUTO_RESUME_LOCK_KEY = 'wart.node.autoResumeLock';
+const AUTO_RESUME_LOCK_MS = 15000;
+
+export function rememberNodeRunning(networkId) {
+  if (!NODE_NETWORKS[networkId]) return;
+  try {
+    localStorage.setItem(NODE_WAS_RUNNING_KEY, networkId);
+  } catch {
+    // ignore
+  }
+}
+
+export function forgetNodeRunning() {
+  try {
+    localStorage.removeItem(NODE_WAS_RUNNING_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+export function rememberedRunningNetwork() {
+  try {
+    const v = localStorage.getItem(NODE_WAS_RUNNING_KEY);
+    return v && NODE_NETWORKS[v] ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resume only the network that was actually running, and only when Start
+ * would succeed. resetDb / an OPFS reset / a resume already kicked off
+ * this page load stay manual.
+ */
+export function shouldAutoResume({
+  remembered,
+  networkId,
+  canStart,
+  resetDb = false,
+  opfsReset = false,
+  lockedRecently = false,
+} = {}) {
+  if (!canStart || resetDb || opfsReset || lockedRecently) return false;
+  return !!remembered && remembered === networkId;
+}
+
+export function autoResumeLockedRecently(now = Date.now()) {
+  try {
+    const prev = Number(sessionStorage.getItem(AUTO_RESUME_LOCK_KEY) || 0);
+    return prev > 0 && now - prev < AUTO_RESUME_LOCK_MS;
+  } catch {
+    return false;
+  }
+}
+
+export function markAutoResumeStarted(now = Date.now()) {
+  try {
+    sessionStorage.setItem(AUTO_RESUME_LOCK_KEY, String(now));
+  } catch {
+    // ignore
+  }
+}
+
 export function peersStorageKey(networkId) {
   return `wsPeers:${getNodeNetwork(networkId).id}`;
 }

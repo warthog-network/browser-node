@@ -1842,3 +1842,29 @@
 .update-banner__version code {
   font-size: 0.9em;
 }
+
+.update-banner__meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+}
+
+.update-banner__meta .update-banner__version {
+  white-space: normal;
+}
+
+.update-banner__auto {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  font-size: 0.75rem;
+  opacity: 0.8;
+  cursor: pointer;
+  user-select: none;
+}
+
+.update-banner__auto input {
+  margin: 0;
+}

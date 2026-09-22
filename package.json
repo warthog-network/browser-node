@@ -22,6 +22,7 @@
     "test:preshare": "node scripts/test-sealed-preshare.mjs",
     "test:balance": "node scripts/test-local-wart-balance.mjs",
     "test:eth-burn": "node scripts/test-eth-burn-http.mjs",
+    "test:resume": "node scripts/test-node-resume.mjs",
     "test:rollups-v2": "node scripts/test-rollups-v2-proof.mjs",
     "test:eth3p:churn": "node scripts/test-eth3p-churn-recovery.mjs"
   },
