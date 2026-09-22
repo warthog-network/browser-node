@@ -554,6 +554,27 @@ export async function enrollEthSigner(api = defaultPoolApi()) {
 
 const k1ByTicket = new Map();
 
+/**
+ * Local DeFi node first. When that node is not running, read the same
+ * wartTxHash from DeFi HTTP and apply assertEthBurnTx. A node that is up
+ * and fails the burn stays failed — no HTTP cover.
+ */
+async function acceptEthBurn(req, spv) {
+  const { verifyLocalEthBurn, httpCoverForSkippedEthBurn } = await import('./localWartChain.js');
+  const { fetchHttpDefiTx } = await import('./poolVerify.js');
+  const local = await verifyLocalEthBurn(req, { spv });
+  if (!local.skipped) return local;
+  try {
+    const flat = await fetchHttpDefiTx(req?.wartTxHash || req?.burnTxHash);
+    return httpCoverForSkippedEthBurn(local, flat, req);
+  } catch (e) {
+    const msg = e?.message || String(e);
+    const reasons = [...(local.reasons || [])];
+    if (!reasons.includes(msg)) reasons.push(msg);
+    return { ...local, ok: false, skipped: true, reasons };
+  }
+}
+
 async function contributeEthOpen(share, open, api) {
   if (!Array.isArray(open) || !open.length) return;
   const role = Number(share?.role || 0);
@@ -574,13 +595,14 @@ async function contributeEthOpen(share, open, api) {
     // ETH rotate-sweep is an Anvil transfer of the live 3P EOA, not a Warthog
     // payout. verifyLocalForPayout() is WART SPV + WART balance; it skip/fails
     // here and the e2 tab never posts (room sits on wait_d2).
+    // Redeems still check the burn. A tab with the DeFi node stopped can cover
+    // that lookup over DeFi HTTP. A running node that fails does not.
     const isEthRotate = kind.startsWith('rotate') || id.startsWith('eth-rotate');
     if (!isEthRotate) {
       try {
-        const { verifyLocalEthBurn } = await import('./localWartChain.js');
         const { fetchInspectPool } = await import('./poolVerify.js');
         const inspect = await fetchInspectPool().catch(() => null);
-        const local = await verifyLocalEthBurn(req, { spv: inspect?.pool?.spv });
+        const local = await acceptEthBurn(req, inspect?.pool?.spv);
         if (local.skipped || !local.ok) {
           const why = (local.reasons || []).join('; ') || 'local burn check failed';
           console.warn('[eth3p local-burn]', id, why);
@@ -637,12 +659,11 @@ async function contributeEthOpen(share, open, api) {
         const { clientSignRound1, clientSignFinish } = await import('./pool3pClient.js');
         let t = await poolPost(api, { action: 'eth3p_ticket', ticketId: id });
         if (t?.wartTxHash && t.wartTxHash !== req.wartTxHash) {
-          const { verifyLocalEthBurn } = await import('./localWartChain.js');
           const { fetchInspectPool } = await import('./poolVerify.js');
           const inspect = await fetchInspectPool().catch(() => null);
-          const local = await verifyLocalEthBurn(
+          const local = await acceptEthBurn(
             { ...req, ...t },
-            { spv: inspect?.pool?.spv },
+            inspect?.pool?.spv,
           );
           if (local.skipped || !local.ok) {
             console.warn('[eth3p local-burn]', id, (local.reasons || []).join('; '));

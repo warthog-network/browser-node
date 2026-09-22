@@ -12,6 +12,7 @@ import {
 import {
   assertPoolPayoutCovered,
   fetchLocalChainHead,
+  flattenWartLookup,
   isLocalDefiNodeLive,
   parseWartBalanceE8,
   verifyLocalForPayout,
@@ -487,6 +488,22 @@ export async function fetchHttpDefiBalanceE8(address, rpc = WART_DEFI_RPC) {
   if (!/^[0-9a-f]{48}$/.test(addr)) throw new Error('wart address required');
   const j = await fetchJson(`${String(rpc).replace(/\/$/, '')}/account/${addr}/wart_balance`);
   return { ...parseWartBalanceE8(j), address: addr, source: 'defi-http' };
+}
+
+/** DeFi HTTPS `/transaction/lookup` — same burn body the WASM node would return. */
+export async function fetchHttpDefiTx(txHash, rpc = WART_DEFI_RPC) {
+  const h = String(txHash || '')
+    .replace(/^0x/i, '')
+    .toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(h)) throw new Error('txHash required');
+  const j = await fetchJson(`${String(rpc).replace(/\/$/, '')}/transaction/lookup/${h}`);
+  if (j && typeof j === 'object' && 'code' in j && j.code !== 0 && j.code != null) {
+    throw new Error(j.error || `rpc code ${j.code}`);
+  }
+  const data = j && typeof j === 'object' && 'code' in j ? j.data : j;
+  const flat = flattenWartLookup(data);
+  if (!flat?.txHash) throw new Error('DeFi HTTP lookup returned no tx');
+  return flat;
 }
 
 export function wasmSkipAllowsHttpCover(local, noticeAndInspectOk) {

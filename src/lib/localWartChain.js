@@ -371,8 +371,31 @@ export function assertEthBurnTx(flat, {
 }
 
 /**
+ * DeFi HTTP may cover an ETH burn only when the in-tab node is absent.
+ * A running node that failed ancestry or the burn lookup stays failed.
+ */
+export function httpCoverForSkippedEthBurn(local, flat, ticket) {
+  if (!local?.skipped) return local;
+  assertEthBurnTx(flat, {
+    amountE8: ticket?.amountE8,
+    burnerWart: ticket?.burnerWart,
+    assetHash: ticket?.assetHash,
+  });
+  return {
+    ok: true,
+    skipped: false,
+    source: 'defi-http',
+    tx: flat,
+    head: local.head ?? null,
+    ancestry: local.ancestry ?? null,
+    reasons: [],
+  };
+}
+
+/**
  * Path A payout / ETH unwrap local checks.
- * Fail-closed: DeFi WASM down is not ok (callers must not sign).
+ * Fail-closed: DeFi WASM down returns skipped. ETH redeems HTTP-cover that
+ * skip in the signer. A running node that fails stays failed.
  */
 export async function verifyLocalForPayout({
   poolAddress,
