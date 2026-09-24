@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CLIENT_VERSION } from '../lib/clientVersion.js';
 import {
   clearOpfsStorage,
   createModuleConfig,
@@ -1784,7 +1785,7 @@ export default function WasmBrowserNode() {
           <div className="ext-download__actions">
             <a
               className="btn btn--ghost"
-              href="/downloads/warthog_node_extension.zip"
+              href={`/downloads/warthog_node_extension.zip?v=${encodeURIComponent(CLIENT_VERSION)}`}
               download="warthog_node_extension.zip"
             >
               Download extension (.zip)

@@ -12,7 +12,13 @@ export const CLIENT_VERSION =
 export const CLIENT_BUILT_AT =
   typeof __CLIENT_BUILT_AT__ !== 'undefined' ? String(__CLIENT_BUILT_AT__) : null;
 
-export const EXTENSION_ZIP_URL = 'https://browser-node.netlify.app/downloads/warthog_node_extension.zip';
+/**
+ * Version query is load-bearing. Netlify caches a missing-file 404 for a year
+ * (`cdn-cache-control: max-age=31536000`) and varies on the query string, so a
+ * bare `/downloads/….zip` can stay 404 on an edge long after the file exists.
+ */
+export const EXTENSION_ZIP_URL =
+  `https://browser-node.netlify.app/downloads/warthog_node_extension.zip?v=${encodeURIComponent(CLIENT_VERSION)}`;
 const CHECK_MS = 5 * 60 * 1000;
 const RELOADED_KEY = 'wart.clientVersion.reloadedFor';
 /** '0' turns auto-reload off. Missing means on, which is the historical behavior. */
