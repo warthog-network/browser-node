@@ -867,6 +867,68 @@ async function maybeBirthEthNext(share, api) {
   return born;
 }
 
+/**
+ * Seal the incoming ETH share this tab birthed.
+ *
+ * The live pack is bound to the current EOA. Rotate will not open a sweep
+ * until the next P is sealed to peers who could claim that seat. orbitKeys
+ * arrive on the heartbeat; eth3p_status does not carry them.
+ */
+async function packIncomingEthNext(share, api, beat) {
+  const signerId = share?.signerId;
+  if (!signerId) return null;
+  const st = await fetchEth3pStatus(api).catch(() => null);
+  const { nextPackPlan, nextSeatRecord } = await import('./nextPack.js');
+  const ps = await preshare();
+  const post = (action, body) => poolPost(api, { action, ...body });
+  const bornBy = st?.rotation?.next?.bornBy || {};
+  const roles = [];
+  for (const r of [1, 2]) {
+    if ((bornBy[r] || bornBy[String(r)]) === signerId) roles.push(r);
+  }
+  if (!roles.length && (Number(share.role) === 1 || Number(share.role) === 2)) {
+    roles.push(Number(share.role));
+  }
+  let last = null;
+  for (const role of roles) {
+    const cached = await readNextBornCache(signerId, role);
+    const plan = nextPackPlan(st, { signerId, role, cached });
+    if (!plan) continue;
+    const result = await ps
+      .packSeat({
+        post,
+        prefix: 'eth3p',
+        pool: 'eth',
+        signerId,
+        role,
+        slot: 'next',
+        P: plan.P,
+        record: nextSeatRecord(cached, role),
+        orbit: beat?.orbit?.live || st?.orbit?.live || [],
+        orbitKeys: beat?.orbitKeys || {},
+        otherHolderId: plan.otherHolderId,
+        exclude: plan.exclude,
+        coordinatorHasPack: plan.coordinatorHasPack,
+      })
+      .catch((e) => ({
+        packed: false,
+        role,
+        slot: 'next',
+        reason: `pack threw: ${e?.message || e}`,
+      }));
+    await ps.reportPack({
+      post,
+      prefix: 'eth3p',
+      pool: 'eth',
+      signerId,
+      result,
+      client: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
+    });
+    last = result;
+  }
+  return last;
+}
+
 export async function heartbeatEth(share, api = defaultPoolApi()) {
   const signerId = share?.signerId || (await getOrCreateSignerId());
   const r = await poolPost(api, {
@@ -984,6 +1046,11 @@ export async function heartbeatEth(share, api = defaultPoolApi()) {
       console.warn('[eth3p birth_next]', msg);
       r.birthNextError = msg;
     }
+  }
+  try {
+    await packIncomingEthNext({ ...(live || {}), role, signerId }, api, r);
+  } catch {
+    /* rotate stays in next_ready until this pack lands; the gate says why */
   }
   const merged = live?.userShareHex
     ? { ...(r.share || {}), ...live, userShareHex: live.userShareHex, role }

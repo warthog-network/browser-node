@@ -79,6 +79,12 @@ export async function identityFields({ pool, role, seatEpoch, signerId }) {
  * restart), `true` when it holds one, `null` when unknown. `false` overrides
  * the local "unchanged" memory: a pack the coordinator no longer has is not
  * unchanged, whatever this tab remembers sending.
+ *
+ * `slot` keeps the live-seat pack and the incoming-seat pack from sharing one
+ * memory. Same role, different P: both have to be posted or a rotation waits
+ * forever on an empty next-pack store.
+ *
+ * `exclude` drops peers the sweep gate will not count (wrong network, denylist).
  */
 export async function packSeat({
   post,
@@ -92,6 +98,8 @@ export async function packSeat({
   orbitKeys,
   otherHolderId,
   coordinatorHasPack = null,
+  exclude = [],
+  slot = 'live',
   t = 2,
   max = 4,
 }) {
@@ -113,6 +121,7 @@ export async function packSeat({
     selfId: signerId,
     otherHolderId,
     pubKeys: orbitKeys || {},
+    exclude,
     max,
   });
   if (targets.length < t) {
@@ -126,19 +135,25 @@ export async function packSeat({
     );
   }
 
-  const cacheKey = `${pool}:${role}`;
+  const cacheKey = `${pool}:${role}:${slot || 'live'}`;
   if (coordinatorHasPack === false) packSig.delete(cacheKey);
   const sig = sigOf(role, targets, P);
   if (packSig.get(cacheKey) === sig) {
-    return { packed: true, unchanged: true, role: Number(role), targets: targets.map((x) => x.id) };
+    return {
+      packed: true,
+      unchanged: true,
+      role: Number(role),
+      slot: slot || 'live',
+      targets: targets.map((x) => x.id),
+    };
   }
 
   try {
     const pack = await buildPack({ record, targets, t, aad: packAad({ pool, role, P }) });
     const r = await post(`${prefix}_preshare_put`, { signerId, role: Number(role), pack });
-    if (r?.ok === false) return decline(`coordinator refused pack: ${r.error || r.message || 'unknown'}`, { targets: targets.map((x) => x.id) });
+    if (r?.ok === false) return decline(`coordinator refused pack: ${r.error || r.message || 'unknown'}`, { targets: targets.map((x) => x.id), slot: slot || 'live' });
     packSig.set(cacheKey, sig);
-    return { packed: true, role: Number(role), targets: targets.map((x) => x.id) };
+    return { packed: true, role: Number(role), slot: slot || 'live', targets: targets.map((x) => x.id) };
   } catch (e) {
     // An old coordinator, or a piece that could not be sealed. Not fatal: the
     // seat still signs, it just is not protected against this tab going away.
@@ -156,7 +171,7 @@ const PACK_REPORT_MS = 60000;
 
 export async function reportPack({ post, prefix, pool, signerId, result, client }) {
   if (!result || result.unchanged) return;
-  const key = `${pool}:${result.role}:${result.packed ? 'ok' : result.reason}`;
+  const key = `${pool}:${result.slot || 'live'}:${result.role}:${result.packed ? 'ok' : result.reason}`;
   const now = Date.now();
   if (now - (packReported.get(key) || 0) < PACK_REPORT_MS) return;
   packReported.set(key, now);

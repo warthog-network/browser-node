@@ -220,5 +220,100 @@ check('members without a published key are dropped', chooseTargets({ orbit: ['no
   );
 }
 
+// --- live pack and incoming pack are different seats ---------------------
+// Rotation waits until the next P is sealed. Remembering the live pack must
+// not suppress that post, and a denylisted / wrong-network peer must not be
+// a target: the sweep gate does not count them.
+{
+  const { packSeat, resetPackCache } = await import('../src/lib/preshareClient.js');
+  const { nextPackPlan, excludeIdsForPack } = await import('../src/lib/nextPack.js');
+  resetPackCache();
+  const posts = [];
+  const post = async () => {
+    posts.push(1);
+    return { ok: true };
+  };
+  const orbit = ['node-self', 'node-other', 'node-ok', 'node-official', 'node-8c92950a-dead'];
+  const orbitKeys = {
+    'node-ok': pubKeys['node-a'],
+    'node-official': pubKeys['node-b'],
+    'node-8c92950a-dead': pubKeys['node-c'],
+    'node-spare': pubKeys['node-d'],
+  };
+  const base = {
+    post,
+    prefix: 'pool3p',
+    pool: 'wart',
+    signerId: 'node-self',
+    role: 1,
+    record: { userShareHex: 'ab'.repeat(32), role: 1 },
+    orbit: [...orbit, 'node-spare'],
+    orbitKeys,
+    otherHolderId: 'node-other',
+    exclude: ['node-official', 'node-8c92950a-dead'],
+  };
+  const liveP = '02' + '33'.repeat(32);
+  const nextP = '02' + '44'.repeat(32);
+  const live = await packSeat({ ...base, P: liveP, slot: 'live' });
+  check('live pack posts once', live.packed && !live.unchanged && posts.length === 1);
+  const again = await packSeat({ ...base, P: liveP, slot: 'live' });
+  check('live pack is remembered on its own', again.unchanged === true && posts.length === 1);
+  const incoming = await packSeat({ ...base, P: nextP, slot: 'next' });
+  check(
+    'incoming seat posts even when the live pack is unchanged',
+    incoming.packed && !incoming.unchanged && incoming.slot === 'next' && posts.length === 2,
+  );
+  check(
+    'excluded peers are not sealed to',
+    !incoming.targets.includes('node-official') && !incoming.targets.includes('node-8c92950a-dead'),
+  );
+  check('an eligible spare is sealed to', incoming.targets.includes('node-ok') && incoming.targets.includes('node-spare'));
+
+  const st = {
+    rotation: {
+      phase: 'next_ready',
+      next: {
+        address: 'aa'.repeat(24),
+        bornBy: { 1: 'node-self', 2: 'node-other' },
+      },
+    },
+    packs: { 1: { next: null } },
+    seatDenylist: ['alabama-', 'node-8c92950a'],
+    seatRequireNetwork: 'defi',
+    orbit: {
+      live: orbit,
+      members: [
+        { id: 'node-ok', network: 'defi' },
+        { id: 'node-official', network: 'official1' },
+        { id: 'node-8c92950a-dead', network: 'defi' },
+        { id: 'node-quiet', network: null },
+      ],
+    },
+  };
+  const dropped = excludeIdsForPack(st);
+  check('wrong network is excluded', dropped.includes('node-official'));
+  check('denylist is excluded even on the right network', dropped.includes('node-8c92950a-dead'));
+  check('unknown network stays eligible', !dropped.includes('node-quiet') && !dropped.includes('node-ok'));
+  const plan = nextPackPlan(st, {
+    signerId: 'node-self',
+    role: 1,
+    cached: { userShareHex: 'cd'.repeat(32), P: nextP, poolAddress: 'aa'.repeat(24), signerId: 'node-self' },
+  });
+  check('next_ready plans a pack for the dealer', plan && plan.P === nextP && plan.coordinatorHasPack === null);
+  check('plan excludes the peers the gate ignores', plan.exclude.includes('node-official') && plan.exclude.includes('node-8c92950a-dead'));
+  const idle = nextPackPlan({ ...st, rotation: { ...st.rotation, phase: 'idle' } }, {
+    signerId: 'node-self',
+    role: 1,
+    cached: { userShareHex: 'cd'.repeat(32), P: nextP, signerId: 'node-self' },
+  });
+  check('idle rotation does not ask for a next pack', idle === null);
+  const stranger = nextPackPlan(st, {
+    signerId: 'node-ok',
+    role: 1,
+    cached: { userShareHex: 'cd'.repeat(32), P: nextP, poolAddress: 'aa'.repeat(24), signerId: 'node-ok' },
+  });
+  check('a tab that did not birth the seat does not pack it', stranger === null);
+}
+
 console.log(failures ? `\n${failures} failing case(s)` : '\nall cases passed');
 process.exit(failures ? 1 : 0);

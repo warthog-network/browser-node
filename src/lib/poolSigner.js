@@ -1211,6 +1211,65 @@ async function packNextSeat(share, api) {
   return packCachedSeat(share, api, share.role, share.userShareHex);
 }
 
+/**
+ * Seal the incoming share this tab birthed.
+ *
+ * packNextSeat above packs the live seat. The rotate sweep will not open
+ * until the next P is sealed to peers who can claim that seat, and that
+ * secret lives only in the born-next cache.
+ */
+async function packIncomingNextSeat(share, api) {
+  if (!share?.signerId) return null;
+  const st = await fetchPool3pStatus(api).catch(() => null);
+  const { nextPackPlan, nextSeatRecord } = await import('./nextPack.js');
+  const ps = await preshare();
+  const post = (action, body) => poolPost(api, { action, ...body });
+  const bornBy = st?.rotation?.next?.bornBy || {};
+  const roles = [];
+  for (const r of [1, 2]) {
+    if ((bornBy[r] || bornBy[String(r)]) === share.signerId) roles.push(r);
+  }
+  if (!roles.length && (share.role === 1 || share.role === 2)) roles.push(Number(share.role));
+  let last = null;
+  for (const role of roles) {
+    const cached = await readNextBornCache(share.signerId, role);
+    const plan = nextPackPlan(st, { signerId: share.signerId, role, cached });
+    if (!plan) continue;
+    const result = await ps
+      .packSeat({
+        post,
+        prefix: 'pool3p',
+        pool: 'wart',
+        signerId: share.signerId,
+        role,
+        slot: 'next',
+        P: plan.P,
+        record: nextSeatRecord(cached, role),
+        orbit: st?.orbit?.live || [],
+        orbitKeys: st?.orbitKeys || {},
+        otherHolderId: plan.otherHolderId,
+        exclude: plan.exclude,
+        coordinatorHasPack: plan.coordinatorHasPack,
+      })
+      .catch((e) => ({
+        packed: false,
+        role,
+        slot: 'next',
+        reason: `pack threw: ${e?.message || e}`,
+      }));
+    await ps.reportPack({
+      post,
+      prefix: 'pool3p',
+      pool: 'wart',
+      signerId: share.signerId,
+      result,
+      client: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
+    });
+    last = result;
+  }
+  return last;
+}
+
 
 export async function loadActiveShare(api = defaultPoolApi()) {
   await storageRemove(SHARE_KEY);
@@ -1483,6 +1542,11 @@ export async function heartbeat(share, api = defaultPoolApi()) {
         ...next,
         message: `next Q birth: ${e?.message || e}`,
       };
+    }
+    try {
+      await packIncomingNextSeat(next, api);
+    } catch {
+      /* rotate stays in next_ready until this pack lands; the gate says why */
     }
     return { ...r, share: next };
   }
