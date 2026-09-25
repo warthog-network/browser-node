@@ -76,8 +76,14 @@ export default function UpdateBanner() {
       </span>
       {!ext && <AutoUpdateToggle on={st.autoReload !== false} />}
       {ext ? (
-        <a className="btn btn--ghost" href={EXTENSION_ZIP_URL} target="_blank" rel="noreferrer">
-          Get latest zip
+        <a
+          className="btn btn--ghost"
+          href={EXTENSION_ZIP_URL}
+          target="_blank"
+          rel="noreferrer"
+          title="Unzip over this extension's folder, then press Reload on this same extension in chrome://extensions. Loading it as a second unpacked extension creates a new node id. Reloading this one keeps the id and the shares."
+        >
+          Update in place
         </a>
       ) : (
         <button type="button" className="btn btn--ghost" onClick={reloadNow}>
