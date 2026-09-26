@@ -27,7 +27,7 @@ async function preshare() {
   return import('./preshareClient.js');
 }
 
-export { defaultPoolApi, isPoolApiOverride } from './poolApi.js';
+export { defaultPoolApi, isPoolApiOverride, setSignerChain, signerChain, sepoliaPoolApi } from './poolApi.js';
 
 function is3pShare(share) {
   if (!share || typeof share !== 'object') return false;
@@ -705,6 +705,8 @@ export async function enrollSigner(signerId, api = defaultPoolApi()) {
       action: 'threshold_enroll',
       signerId,
       role: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
+      network: (typeof window !== 'undefined' && window.__wartRunningNetworkId) || null,
+      client: typeof chrome !== 'undefined' && chrome.runtime?.id ? 'extension-node' : 'browser-node',
     }),
   );
   let recoverErr = null;

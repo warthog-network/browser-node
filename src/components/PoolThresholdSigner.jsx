@@ -13,6 +13,8 @@ import {
   writePanelOpen,
   writeStats,
   defaultPoolApi,
+  setSignerChain,
+  signerChain,
 } from '../lib/poolSigner.js';
 import { formatVerifyLine } from '../lib/poolVerify.js';
 import TestnetBridgeBadge, { TestnetBridgeScope } from './TestnetBridgeBadge.jsx';
@@ -493,6 +495,28 @@ export default function PoolThresholdSigner() {
         title={panelOpen ? 'Hide the signer dashboard' : 'Show the signer dashboard'}
       >
         {panelOpen ? 'Hide panel' : 'Show panel'}
+      </button>
+      <button
+        type="button"
+        className={`btn btn--ghost${signerChain() !== 'sepolia' ? ' is-on' : ''}`}
+        onClick={() => {
+          setSignerChain('anvil');
+          window.location.reload();
+        }}
+        title="Sign the lab pool"
+      >
+        Lab
+      </button>
+      <button
+        type="button"
+        className={`btn btn--ghost${signerChain() === 'sepolia' ? ' is-on' : ''}`}
+        onClick={() => {
+          setSignerChain('sepolia');
+          window.location.reload();
+        }}
+        title="Sign the Sepolia pool"
+      >
+        Sepolia
       </button>
     </div>
   );
