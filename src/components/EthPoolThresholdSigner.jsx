@@ -10,6 +10,7 @@ import {
   writeEnabled,
   writePanelOpen,
 } from '../lib/ethPoolSigner.js';
+import { setSignerChain, signerChain } from '../lib/poolApi.js';
 import TestnetBridgeBadge, { TestnetBridgeScope } from './TestnetBridgeBadge.jsx';
 
 const TRANSIENT =
@@ -275,6 +276,28 @@ export default function EthPoolThresholdSigner() {
       </button>
       <button type="button" className="btn btn--ghost" onClick={togglePanel}>
         {panelOpen ? 'Hide ETH panel' : 'Show ETH panel'}
+      </button>
+      <button
+        type="button"
+        className={`btn btn--ghost${signerChain() !== 'sepolia' ? ' is-on' : ''}`}
+        onClick={() => {
+          setSignerChain('anvil');
+          window.location.reload();
+        }}
+        title="Sign the lab ETH pool"
+      >
+        Lab
+      </button>
+      <button
+        type="button"
+        className={`btn btn--ghost${signerChain() === 'sepolia' ? ' is-on' : ''}`}
+        onClick={() => {
+          setSignerChain('sepolia');
+          window.location.reload();
+        }}
+        title="Sign the Sepolia ETH pool"
+      >
+        Sepolia
       </button>
     </div>
   );
