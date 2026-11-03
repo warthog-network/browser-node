@@ -1,5 +1,5 @@
 /**
- * Browser-node networks: Official1 mainnet (0.9.6) vs DeFi testnet (0.10.22).
+ * Browser-node networks: Official1 mainnet (0.9.6) vs DeFi testnet (0.10.38).
  *
  * Different GRUNT magic, DB schema, and WASM triad — never mix peers or OPFS.
  * DeFi triad lives at /node/defi/; Official1 stays at /node/.
@@ -51,8 +51,8 @@ export const NODE_NETWORKS = {
     argv: ['--testnet', '--enable-webrtc', '--session', '/opfs/defi'],
     session: '/opfs/defi',
     opfsSubdir: 'defi',
-    version: { major: 0, minor: 10, patch: 22 },
-    versionText: '0.10.22',
+    version: { major: 0, minor: 10, patch: 38 },
+    versionText: '0.10.38',
     gruntConnect: 'TESTNET GRUNT?',
     gruntAccept: 'TESTNET GRUNT!',
     testnet: true,
