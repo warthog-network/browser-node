@@ -169,6 +169,23 @@ check(
   'a piece there would restore the custody this design removes',
 );
 check('members without a published key are dropped', chooseTargets({ orbit: ['node-x'], pubKeys: {} }).length === 0);
+const pinned = chooseTargets({
+  orbit: ['node-a', 'node-b', 'node-c', 'node-d', 'lighthouse-1-pack', 'lighthouse-2-pack', 'lighthouse-vps'],
+  pubKeys: {
+    ...pubKeys,
+    'lighthouse-1-pack': coordinator.pubHex,
+    'lighthouse-2-pack': coordinator.pubHex,
+    'lighthouse-vps': coordinator.pubHex,
+  },
+}).map((t) => t.id);
+check(
+  'lighthouse custodians take the first pack slots',
+  pinned[0] === 'lighthouse-1-pack' && pinned[1] === 'lighthouse-2-pack' && pinned.length === 4,
+);
+check(
+  'a lighthouse id on the coordinator host is still excluded',
+  !pinned.includes('lighthouse-vps'),
+);
 
 // --- the "unchanged" memory must notice a new seat key --------------------
 // 2026-09-13: after a Q rotation both holders kept their role and saw the same

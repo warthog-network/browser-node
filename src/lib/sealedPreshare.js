@@ -245,14 +245,24 @@ export async function openPack({ pack, resealed, privHex }) {
  * running on the coordinator: a piece stored on the same host as the pack store
  * gives back exactly the custody this design removes. Callers pass `exclude`
  * for pool-specific ids.
+ *
+ * Ids starting with `lighthouse-` are the off-coordinator pack custodians.
+ * They sort ahead of browser tabs so a short orbit still seals to them, and a
+ * long one does not fill all `max` slots with tabs and leave the lighthouse out.
  */
 export function chooseTargets({ orbit, selfId, otherHolderId, pubKeys = {}, exclude = [], max = 4 }) {
   const banned = new Set([selfId, otherHolderId, ...exclude].filter(Boolean));
-  return (orbit || [])
-    .filter((id) => id && !banned.has(id) && !/(^|-)(vps|coordinator)(-|$)/i.test(id))
-    .map((id) => ({ id, pubHex: pubKeys[id] || null }))
-    .filter((x) => x.pubHex)
-    .slice(0, max);
+  const rows = [];
+  const seen = new Set();
+  for (const id of orbit || []) {
+    if (!id || seen.has(id) || banned.has(id) || /(^|-)(vps|coordinator)(-|$)/i.test(id)) continue;
+    const pubHex = pubKeys[id] || null;
+    if (!pubHex) continue;
+    seen.add(id);
+    rows.push({ id, pubHex, pin: /^lighthouse-/i.test(id) });
+  }
+  rows.sort((a, b) => Number(b.pin) - Number(a.pin));
+  return rows.slice(0, max).map(({ id, pubHex }) => ({ id, pubHex }));
 }
 
 /** Context string binding a pack to one pool, seat, and Q. */

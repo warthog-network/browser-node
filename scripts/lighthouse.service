@@ -1,0 +1,22 @@
+[Unit]
+Description=Warthog lighthouse pack custodian (sealed d1/d2 pieces, never seats)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lighthouse
+Group=lighthouse
+WorkingDirectory=/opt/lighthouse
+Environment=POOL_API_URL=https://cartesi-bridge.duckdns.org/api/pool
+Environment=LIGHTHOUSE_KEY_DIR=/var/lib/lighthouse
+Environment=LIGHTHOUSE_IDS=lighthouse-1-pack,lighthouse-2-pack
+Environment=POLL_MS=5000
+ExecStart=/usr/bin/node /opt/lighthouse/lighthouse.mjs
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
