@@ -1,18 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CLIENT_VERSION } from '../lib/clientVersion.js';
 import {
+  clearOpfsStaleReloadFlag,
   clearOpfsStorage,
   createModuleConfig,
   hasOpfs,
   hasSharedArrayBuffer,
   isCrossOriginIsolated,
   isOpfsReadonlyError,
+  isOpfsStaleHandleError,
   isWasmOomError,
   listOpfsEntries,
   markOpfsNeedsReset,
+  OPFS_QUIT_BROWSER_HINT,
   opfsNeedsReset,
   prepareOpfsForStart,
   recoverOpfsStorage,
+  resolveOpfsSubdir,
   resolveWsPeers,
   startWasmNode,
   terminateWasmWorkers,
@@ -241,10 +245,23 @@ export default function WasmBrowserNode() {
       setPeersInput(peers);
 
       // Wait for head bootstrap wipe (?resetDb / session flag) before probes / Start.
+      let boot;
       try {
-        const boot = await window.__wartOpfsBootstrap;
+        boot = await window.__wartOpfsBootstrap;
         if (cancelled) return;
-        if (boot && boot.skipped !== true) {
+        if (boot?.reloading) {
+          appendLog('OPFS wipe done — reloading once so Chrome drops cached handles…');
+          setStatus('Reloading after OPFS wipe…');
+          return;
+        }
+        if (boot?.afterWipe) {
+          storageFatalRef.current = false;
+          setStorageFatal(false);
+          appendLog(
+            'OPFS wipe complete on a fresh document — Chrome FileSystemHandles are new. Click Start once.',
+          );
+          setStatus('OPFS reset OK — click Start full WASM node once');
+        } else if (boot && boot.skipped !== true) {
           if (boot.ok) {
             storageFatalRef.current = false;
             setStorageFatal(false);
@@ -279,8 +296,9 @@ export default function WasmBrowserNode() {
 
       if (cancelled) return;
 
-      // Second-pass clear if bootstrap left residue or session still dirty
-      if (opfsNeedsReset()) {
+      // Second-pass clear if bootstrap left residue or session still dirty.
+      // Do not wipe again on the post-wipe document — that re-poisons /opfs/defi.
+      if (opfsNeedsReset() && !boot?.afterWipe) {
         appendLog('Session still marked dirty — second OPFS clear (workers already dead on fresh load)…');
         const r = await clearOpfsStorage({
           terminateWorkers: false,
@@ -366,7 +384,9 @@ export default function WasmBrowserNode() {
 
   // Refresh local chain.db3 size (after import / clear).
   const refreshLocalDbInfo = useCallback(async () => {
-    const info = await getLocalChainDbInfo({ subdir: getNodeNetwork(networkId).opfsSubdir });
+    const info = await getLocalChainDbInfo({
+      subdir: resolveOpfsSubdir(getNodeNetwork(networkId).opfsSubdir),
+    });
     setLocalDbInfo(info);
     return info;
   }, [networkId]);
@@ -577,7 +597,7 @@ export default function WasmBrowserNode() {
       `Network → ${net.label} (WASM ${net.versionText}, session ${net.session}, GRUNT ${net.gruntConnect})`,
     );
     runBridgeProbes(peers, {}, id);
-    getLocalChainDbInfo({ subdir: net.opfsSubdir }).then(setLocalDbInfo).catch(() => {});
+    getLocalChainDbInfo({ subdir: resolveOpfsSubdir(net.opfsSubdir) }).then(setLocalDbInfo).catch(() => {});
   };
 
   /** Raw open test (no GRUNT) — success = onopen. Uses current peers field. */
@@ -689,12 +709,13 @@ export default function WasmBrowserNode() {
     appendLog('Terminating WASM workers, then clearing OPFS…');
     try {
       terminateWasmWorkers(appendLog);
-      const before = await listOpfsEntries(network.opfsSubdir);
+      const sessionDir = resolveOpfsSubdir(network.opfsSubdir);
+      const before = await listOpfsEntries(sessionDir);
       appendLog(`OPFS before: ${before.length ? before.join(', ') : '(empty)'}`);
       const result = await clearOpfsStorage({
         terminateWorkers: true,
         log: appendLog,
-        subdir: network.opfsSubdir,
+        subdir: sessionDir,
       });
       if (result.ok) {
         storageFatalRef.current = false;
@@ -702,7 +723,10 @@ export default function WasmBrowserNode() {
         startedRef.current = false;
         setRunning(false);
         appendLog(`OPFS cleared — removed: ${result.removed?.join(', ') || '(already empty)'}`);
-        setStatus('OPFS cleared — click Start full WASM node (one tab only)');
+        appendLog('Reloading so Chrome drops cached OPFS handles — then Start once.');
+        setStatus('OPFS cleared — reloading…');
+        window.location.reload();
+        return;
       } else {
         setError(result.error || 'OPFS clear failed');
         appendLog(`OPFS clear FAILED: ${result.error}`);
@@ -731,7 +755,11 @@ export default function WasmBrowserNode() {
     appendLog('Recover: kill workers → clear OPFS → reload (?resetDb=1)…');
     try {
       // reload:true always navigates away; may not return
-      await recoverOpfsStorage({ reload: true, log: appendLog, subdir: network.opfsSubdir });
+      await recoverOpfsStorage({
+        reload: true,
+        log: appendLog,
+        subdir: resolveOpfsSubdir(network.opfsSubdir),
+      });
     } catch (err) {
       appendLog(`Recover error: ${err.message || err}`);
       // Force navigation even if helper threw
@@ -787,7 +815,10 @@ export default function WasmBrowserNode() {
     setError(null);
     appendLog(`[snapshot] importing file “${file.name}” (${formatBytes(file.size)})…`);
     try {
-      const result = await importChainDbBlob(file, { log: appendLog, subdir: network.opfsSubdir });
+      const result = await importChainDbBlob(file, {
+        log: appendLog,
+        subdir: resolveOpfsSubdir(network.opfsSubdir),
+      });
       if (!result.ok) {
         setError(result.error || 'Snapshot import failed');
         appendLog(`[snapshot] FAIL — ${result.error}`);
@@ -817,7 +848,10 @@ export default function WasmBrowserNode() {
     setError(null);
     appendLog(`[snapshot] downloading ${url}…`);
     try {
-      const result = await importChainDbFromUrl(url, { log: appendLog, subdir: network.opfsSubdir });
+      const result = await importChainDbFromUrl(url, {
+        log: appendLog,
+        subdir: resolveOpfsSubdir(network.opfsSubdir),
+      });
       if (!result.ok) {
         setError(result.error || 'Snapshot URL import failed');
         appendLog(`[snapshot] FAIL — ${result.error}`);
@@ -884,7 +918,7 @@ export default function WasmBrowserNode() {
 
       const prep = await prepareOpfsForStart({
         forceClear: opfsNeedsReset(),
-        subdir: network.opfsSubdir,
+        subdir: resolveOpfsSubdir(network.opfsSubdir),
       });
       if (!prep.ok) {
         throw new Error(prep.error || 'OPFS prepare failed');
@@ -912,7 +946,7 @@ export default function WasmBrowserNode() {
       if (network.testnet && !defiTriadReady) {
         throw new Error(
           'DeFi WASM triad is not installed at /node/defi/wart-node.js. '
-          + 'Copy wasm-out/wasm/* from core-wasm-build-0.10.22 after the emscripten build.',
+          + 'Copy wasm-out/wasm/* from core-wasm-build-0.10.38 after the emscripten build.',
         );
       }
       // Brief settle so any prior sockets are fully closed.
@@ -962,6 +996,7 @@ export default function WasmBrowserNode() {
       } else {
         startedRef.current = true;
         setRunning(true);
+        clearOpfsStaleReloadFlag();
         setStatus('Full node runtime started — watch peers / chain / console for GRUNT');
         appendLog('Emscripten runtime ready — full node is running in this tab');
         appendLog(`Expect: [ws-handshake] … ${network.gruntConnect} complete · Adding websocket peer …`);
@@ -969,7 +1004,11 @@ export default function WasmBrowserNode() {
     } catch (err) {
       console.error(err);
       const msg = err.message || String(err);
-      if (isOpfsReadonlyError(err)) {
+      if (isOpfsStaleHandleError(err)) {
+        appendLog(`OPFS handle stale: ${msg}`);
+        setError(OPFS_QUIT_BROWSER_HINT);
+        setStatus('Failed to start — quit Brave completely, then Start once');
+      } else if (isOpfsReadonlyError(err)) {
         handleOpfsReadonly(msg);
       } else if (isWasmOomError(err)) {
         handleWasmOom(msg);
@@ -1153,7 +1192,7 @@ export default function WasmBrowserNode() {
       {network.testnet && !defiTriadReady && (
         <div className="dash__error" style={{ textAlign: 'left' }}>
           DeFi WASM triad is not at <code className="mono">/node/defi/</code> yet.
-          Finish the 0.10.22 emscripten build, then copy
+          Finish the 0.10.38 emscripten build, then copy
           {' '}<code className="mono">wasm-out/wasm/wart-node.*</code> there.
           Official1 (0.9.6) still works from the network switch.
         </div>

@@ -143,6 +143,12 @@ function makeShellHtml({ title }) {
       // Wipe OPFS before React/WASM mounts when recovering from locked SQLite DBs.
       window.__wartOpfsBootstrap = (async function wartOpfsBootstrap() {
         try {
+          try {
+            if (sessionStorage.getItem('wartOpfsFreshHandles') === 'pending') {
+              sessionStorage.removeItem('wartOpfsFreshHandles');
+              return { skipped: true, afterWipe: true };
+            }
+          } catch (e) {}
           var params = new URLSearchParams(location.search);
           var reset =
             params.get('resetDb') === '1' ||
@@ -177,6 +183,14 @@ function makeShellHtml({ title }) {
           if (failed.length === 0) {
             try { sessionStorage.removeItem('wartOpfsNeedsReset'); } catch (e) {}
             console.info('[opfs-bootstrap] wiped:', removed.length ? removed.join(', ') : '(empty)');
+            try {
+              sessionStorage.setItem('wartOpfsFreshHandles', 'pending');
+              var clean = new URL(location.href);
+              clean.searchParams.delete('resetDb');
+              clean.searchParams.delete('resetdb');
+              location.replace(clean.toString());
+              return { ok: true, removed: removed, reloading: true };
+            } catch (e) {}
             return { ok: true, removed: removed };
           }
           console.warn('[opfs-bootstrap] partial wipe:', failed.join('; '));

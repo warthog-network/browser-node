@@ -61,6 +61,83 @@ export function hasOpfs() {
     && typeof navigator.storage.getDirectory === 'function';
 }
 
+/**
+ * Chromium File System Access (Chrome, Brave, Brave Beta): a DirectoryHandle
+ * is invalid after this process deleted the same name. Clear site data does
+ * not drop those handles — the browser process must exit.
+ * DeFi `--session /opfs/defi` mkdir hits this after Clear / Recover.
+ */
+export function isOpfsStaleHandleError(err) {
+  if (!err) return false;
+  if (err.name === 'InvalidStateError' || err.name === 'OpfsStaleHandleError') return true;
+  return /state cached in an interface object/i.test(String(err.message || err));
+}
+
+export const OPFS_QUIT_BROWSER_HINT =
+  'Quit Brave/Chrome completely (every window, including Brave Beta). '
+  + 'Clear site data and reloading this tab do not drop OPFS handles in the running process.';
+
+const OPFS_STALE_RELOAD_KEY = 'wartOpfsStaleReload';
+const DEFI_SESSION_KEY = 'wartOpfsDefiSubdir';
+const DEFI_SESSION_FALLBACKS = ['defi', 'defi2', 'defi3', 'defi4'];
+
+function isDefiSessionName(name) {
+  return /^defi\d*$/i.test(String(name || ''));
+}
+
+export function defiSessionCandidates(preferred = 'defi') {
+  const names = [];
+  try {
+    const stored = sessionStorage.getItem(DEFI_SESSION_KEY);
+    if (stored) names.push(stored);
+  } catch {
+    // ignore
+  }
+  names.push(preferred, ...DEFI_SESSION_FALLBACKS);
+  return [...new Set(names.filter(Boolean))];
+}
+
+/** Active DeFi OPFS subdir (may be defi2+ if `defi` is poisoned in this process). */
+export function resolveOpfsSubdir(preferred) {
+  if (!preferred) return null;
+  try {
+    const stored = sessionStorage.getItem(DEFI_SESSION_KEY);
+    if (stored && isDefiSessionName(stored)) return stored;
+  } catch {
+    // ignore
+  }
+  return preferred;
+}
+
+/** One-shot navigation. Reload does not fix Clear-site-data OPFS leaks. */
+export function reloadForStaleOpfsHandles(log) {
+  if (typeof window === 'undefined') return false;
+  try {
+    if (sessionStorage.getItem(OPFS_STALE_RELOAD_KEY) === '1') return false;
+    sessionStorage.setItem(OPFS_STALE_RELOAD_KEY, '1');
+  } catch {
+    // still attempt reload if sessionStorage is blocked
+  }
+  log?.('[opfs] reloading (often not enough after Clear site data — quit the browser if Start still fails)…');
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('resetDb');
+    url.searchParams.delete('resetdb');
+    window.location.replace(url.toString());
+  } catch {
+    window.location.reload();
+  }
+  return true;
+}
+
+export function clearOpfsStaleReloadFlag() {
+  try {
+    sessionStorage.removeItem(OPFS_STALE_RELOAD_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 /** List OPFS entry names (best-effort). `subdir` scopes to a network session dir. */
 export async function listOpfsEntries(subdir) {
   if (!hasOpfs()) return [];
@@ -173,7 +250,7 @@ export async function clearOpfsStorage({
   /** When set, only delete that session directory (e.g. `defi`). */
   subdir = null,
   /** Root names to keep when wiping Official1 (other network session dirs). */
-  keepDirs = ['defi'],
+  keepDirs = ['defi', 'defi2', 'defi3', 'defi4'],
 } = {}) {
   if (!hasOpfs()) {
     return { ok: false, error: 'OPFS not available (need Chromium + secure context)' };
@@ -195,13 +272,41 @@ export async function clearOpfsStorage({
       const removed = [];
       const failed = [];
       if (subdir) {
-        try {
-          await root.removeEntry(subdir, { recursive: true });
-          removed.push(subdir);
-        } catch (e) {
-          const msg = e?.message || String(e);
-          if (!/not found|does not exist|NotFoundError/i.test(msg)) {
-            failed.push(`${subdir}: ${msg}`);
+        // Keep session directories. Removing then recreating `/opfs/defi` in
+        // this process is Chromium/Brave InvalidStateError (stale handle).
+        const targets = new Set(defiSessionCandidates(subdir));
+        // @ts-ignore
+        for await (const [name] of root.entries()) {
+          if (isDefiSessionName(name)) targets.add(name);
+        }
+        for (const name of targets) {
+          let dir = null;
+          try {
+            dir = await root.getDirectoryHandle(name);
+          } catch (e) {
+            const msg = e?.message || String(e);
+            if (e?.name === 'NotFoundError' || /not found|does not exist/i.test(msg)) {
+              continue;
+            }
+            if (isOpfsStaleHandleError(e)) {
+              log?.(`[opfs] ${name} handle stale — skip (quit browser if Start still fails)`);
+              continue;
+            }
+            failed.push(`${name}: ${msg}`);
+            continue;
+          }
+          const childNames = [];
+          // @ts-ignore
+          for await (const [child] of dir.entries()) {
+            childNames.push(child);
+          }
+          for (const child of childNames) {
+            try {
+              await dir.removeEntry(child, { recursive: true });
+              removed.push(`${name}/${child}`);
+            } catch (e) {
+              failed.push(`${name}/${child}: ${e?.message || e}`);
+            }
           }
         }
       } else {
@@ -212,7 +317,7 @@ export async function clearOpfsStorage({
           names.push(name);
         }
         for (const name of names) {
-          if (keep.has(name)) continue;
+          if (keep.has(name) || isDefiSessionName(name)) continue;
           try {
             await root.removeEntry(name, { recursive: true });
             removed.push(name);
@@ -225,8 +330,10 @@ export async function clearOpfsStorage({
       lastFailed = failed;
       if (!failed.length) {
         const left = subdir
-          ? await listOpfsEntries(subdir)
-          : (await listOpfsEntries()).filter((n) => !keep.has(n));
+          ? (await Promise.all(
+            defiSessionCandidates(subdir).map((n) => listOpfsEntries(n)),
+          )).flat()
+          : (await listOpfsEntries()).filter((n) => !keep.has(n) && !isDefiSessionName(n));
         if (left.length === 0) {
           clearOpfsNeedsResetFlag();
           return { ok: true, removed, attempts: attempt + 1 };
@@ -334,7 +441,7 @@ export function isOpfsReadonlyError(err) {
   const msg = String(err?.message || err || '');
   // Chromium in-place SyncAccessHandle cache (Brave/Chrome stable). Not a
   // cross-tab lock — glue retries it; do not kill the pthread pool.
-  if (/state cached in an interface object/i.test(msg)) return false;
+  if (isOpfsStaleHandleError(err)) return false;
   return /readonly database|NoModificationAllowed|InvalidStateError|SQLITE_READONLY|write a readonly/i.test(msg);
 }
 
@@ -906,30 +1013,59 @@ export function installLocalBridgeWsRewrite(targetWssUrl, log) {
  * @returns {Promise<object>} runtime Module instance (await the ready promise)
  */
 /**
- * Chrome/Brave stable can throw InvalidStateError on a cached OPFS
- * DirectoryHandle. Official1 uses session `/opfs` (already the mount).
- * DeFi mkdir `/opfs/defi` hits that bug — create it from a fresh root first.
+ * Chromium/Brave throws InvalidStateError when recreating a directory name
+ * this process already deleted (Clear site data does not reset that cache).
+ * Official1 uses session `/opfs` (the mount). DeFi mkdir `/opfs/defi` hits it.
+ *
+ * Try `defi` then unused names (`defi2`…) so Start can proceed without
+ * quitting the browser. If every name is poisoned, the process must exit.
  */
+async function mkdirOpfsSubdir(name) {
+  const root = await navigator.storage.getDirectory();
+  try {
+    await root.getDirectoryHandle(name);
+    return 'exists';
+  } catch (e) {
+    if (e?.name !== 'NotFoundError' && !/not found|does not exist/i.test(String(e?.message || e))) {
+      throw e;
+    }
+    await root.getDirectoryHandle(name, { create: true });
+    return 'created';
+  }
+}
+
 export async function ensureOpfsSessionDir(subdir, log) {
-  if (!subdir) return;
-  if (typeof navigator === 'undefined' || !navigator.storage?.getDirectory) return;
+  if (!subdir) return { subdir: null, session: '/opfs' };
+  if (typeof navigator === 'undefined' || !navigator.storage?.getDirectory) {
+    return { subdir, session: `/opfs/${subdir}` };
+  }
+
+  const names = defiSessionCandidates(subdir);
   let lastErr;
-  for (let i = 0; i < 4; i++) {
+  for (const name of names) {
     try {
-      const root = await navigator.storage.getDirectory();
-      await root.getDirectoryHandle(subdir, { create: true });
-      log?.(`[opfs] session dir /${subdir} ready`);
-      return;
+      const how = await mkdirOpfsSubdir(name);
+      log?.(`[opfs] session dir /${name} ready (${how})`);
+      try {
+        sessionStorage.setItem(DEFI_SESSION_KEY, name);
+      } catch {
+        // ignore
+      }
+      return { subdir: name, session: `/opfs/${name}` };
     } catch (e) {
       lastErr = e;
-      const stale = e?.name === 'InvalidStateError'
-        || /state cached in an interface object/i.test(String(e?.message || e));
-      if (!stale) throw e;
-      log?.(`[opfs] session dir retry ${i + 1}: ${e?.message || e}`);
-      await new Promise((r) => setTimeout(r, 80 * (i + 1)));
+      if (!isOpfsStaleHandleError(e)) throw e;
+      log?.(`[opfs] /${name} stale: ${e?.message || e}`);
     }
   }
-  throw lastErr;
+
+  const err = new Error(
+    `OPFS cannot create a DeFi session directory (${names.map((n) => `/${n}`).join(', ')}). `
+    + OPFS_QUIT_BROWSER_HINT,
+  );
+  err.name = 'OpfsStaleHandleError';
+  err.cause = lastErr;
+  throw err;
 }
 
 export async function startWasmNode(moduleConfig) {
@@ -945,7 +1081,14 @@ export async function startWasmNode(moduleConfig) {
 
   const net = getNodeNetwork(moduleConfig?.__networkId || DEFAULT_NODE_NETWORK_ID);
   if (net.opfsSubdir) {
-    await ensureOpfsSessionDir(net.opfsSubdir, moduleConfig?.print);
+    const got = await ensureOpfsSessionDir(net.opfsSubdir, moduleConfig?.print);
+    if (got?.session && Array.isArray(moduleConfig?.arguments)) {
+      const argv = moduleConfig.arguments;
+      const i = argv.indexOf('--session');
+      if (i >= 0) argv[i + 1] = got.session;
+      else argv.push('--session', got.session);
+      moduleConfig.print?.(`[opfs] using session ${got.session}`);
+    }
   }
 
   const target = moduleConfig?.__wsPeers || DEFAULT_WS_PEERS;
