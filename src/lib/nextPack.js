@@ -90,12 +90,14 @@ export function nextPackPlan(st, { signerId, role, cached } = {}) {
   if (!nextAddr && phase !== 'need_birth') return null;
   const other = r === 1 ? bornBy[2] || bornBy['2'] : bornBy[1] || bornBy['1'];
   const view = st?.packs?.[String(r)]?.next || st?.packs?.[r]?.next || null;
-  // null view means this status shape does not report the next slot (ETH) or
-  // the slot is empty. Do not force a repost on every beat: a successful post
-  // is remembered locally. An explicit not-sealed view does force one.
+  // null used to mean "unknown", so a tab that had posted the live P kept that
+  // memory and never sealed the next P. A born seat with an empty next slot is
+  // unsealed. ETH still omits the slot before a seat exists; leave that alone.
+  const seatReady = !!(st?.rotation?.next?.seatsReady?.[r] || st?.rotation?.next?.seatsReady?.[String(r)]);
   let coordinatorHasPack = null;
   if (view && (view.sealed || view.ready)) coordinatorHasPack = true;
   else if (view && view.sealed === false) coordinatorHasPack = false;
+  else if (!view && seatReady && dealer === signerId) coordinatorHasPack = false;
   return {
     P: cached.P,
     otherHolderId: other || null,

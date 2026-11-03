@@ -152,6 +152,14 @@ export async function packSeat({
     const pack = await buildPack({ record, targets, t, aad: packAad({ pool, role, P }) });
     const r = await post(`${prefix}_preshare_put`, { signerId, role: Number(role), pack });
     if (r?.ok === false) return decline(`coordinator refused pack: ${r.error || r.message || 'unknown'}`, { targets: targets.map((x) => x.id), slot: slot || 'live' });
+    // A live-P post can return ok while the coordinator files it under the live
+    // seat. Remembering that as the next slot is how a rotation waits forever.
+    if (r?.slot && r.slot !== (slot || 'live')) {
+      return decline(`coordinator stored pack in ${r.slot}, wanted ${slot || 'live'}`, {
+        targets: targets.map((x) => x.id),
+        slot: slot || 'live',
+      });
+    }
     packSig.set(cacheKey, sig);
     return { packed: true, role: Number(role), slot: slot || 'live', targets: targets.map((x) => x.id) };
   } catch (e) {
