@@ -236,11 +236,48 @@ export function encodeValidateOutputCall(rawDataHex, proof) {
   return validateOutputSelector() + word(offOutput) + word(offProof) + outputEnc + proofEnc;
 }
 
+/** Block tag `confirmations` behind the tip. Null when the chain is shorter. */
+export function laggedBlockTag(blockNumber, confirmations) {
+  const n = Number(blockNumber);
+  const c = Number(confirmations);
+  if (!Number.isFinite(n) || n < 0 || !Number.isFinite(c) || c < 0 || n < c) return null;
+  return '0x' + (n - c).toString(16);
+}
+
+async function ethRpc(rpcUrl, method, params) {
+  const res = await fetch(rpcUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (body.error) {
+    const err = new Error(body.error.message || `${method} rpc error`);
+    err.rpc = true;
+    throw err;
+  }
+  if (!Object.prototype.hasOwnProperty.call(body, 'result')) {
+    throw new Error(`${method}: empty rpc response`);
+  }
+  return body.result;
+}
+
 /**
  * eth_call Application.validateOutput. Success = the call does not revert
  * (result is `0x`). A revert / JSON-RPC error = proof rejected.
+ *
+ * `confirmations` calls at that many blocks behind the tip. There is no
+ * fallback to `latest` when the lagged call cannot be made.
+ * `chainId` (decimal) must match eth_chainId on the same RPC.
  */
-export async function validateOutputOnL1({ rawDataHex, proof, app, rpcUrl = CARTESI_L1_RPC } = {}) {
+export async function validateOutputOnL1({
+  rawDataHex,
+  proof,
+  app,
+  rpcUrl = CARTESI_L1_RPC,
+  confirmations = 0,
+  chainId = null,
+} = {}) {
   if (!outputHasProof(proof)) {
     return { ok: false, waiting: true, error: 'waiting for epoch claim (v2)' };
   }
@@ -250,29 +287,45 @@ export async function validateOutputOnL1({ rawDataHex, proof, app, rpcUrl = CART
   if (!stripHex(rawDataHex)) {
     return { ok: false, waiting: false, error: 'output raw_data missing' };
   }
-  const data = encodeValidateOutputCall(rawDataHex, proof);
-  let body;
+  let blockTag = 'latest';
   try {
-    const res = await fetch(rpcUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'eth_call',
-        params: [{ to: app, data }, 'latest'],
-      }),
-    });
-    body = await res.json().catch(() => ({}));
+    if (chainId != null) {
+      const got = Number(await ethRpc(rpcUrl, 'eth_chainId', []));
+      if (got !== Number(chainId)) {
+        return {
+          ok: false,
+          waiting: false,
+          error: `L1 chain id ${got} ≠ pinned ${Number(chainId)}`,
+        };
+      }
+    }
+    if (Number(confirmations) > 0) {
+      const height = Number(await ethRpc(rpcUrl, 'eth_blockNumber', []));
+      blockTag = laggedBlockTag(height, confirmations);
+      if (!blockTag) {
+        return {
+          ok: false,
+          waiting: true,
+          error: `L1 height ${height} is under ${confirmations} confirmations`,
+        };
+      }
+    }
   } catch (e) {
     return { ok: false, waiting: false, error: e?.message || 'validateOutput rpc failed' };
   }
-  if (body.error) {
-    return {
-      ok: false,
-      waiting: false,
-      error: `validateOutput reverted: ${body.error.message || 'rpc error'}`,
-    };
+  const data = encodeValidateOutputCall(rawDataHex, proof);
+  let body;
+  try {
+    body = await ethRpc(rpcUrl, 'eth_call', [{ to: app, data }, blockTag]).then((result) => ({ result }));
+  } catch (e) {
+    if (e?.rpc) {
+      return {
+        ok: false,
+        waiting: false,
+        error: `validateOutput reverted: ${e.message || 'rpc error'}`,
+      };
+    }
+    return { ok: false, waiting: false, error: e?.message || 'validateOutput rpc failed' };
   }
   if (!Object.prototype.hasOwnProperty.call(body, 'result')) {
     return { ok: false, waiting: false, error: 'validateOutput: empty rpc response' };
@@ -282,13 +335,25 @@ export async function validateOutputOnL1({ rawDataHex, proof, app, rpcUrl = CART
   if (raw !== '0x' && raw !== '') {
     return { ok: false, waiting: false, error: `validateOutput unexpected result ${raw.slice(0, 20)}` };
   }
-  return { ok: true, app, rpcUrl, api: 'v2' };
+  return { ok: true, app, rpcUrl, blockTag, api: 'v2' };
+}
+
+/** Lab ticket ids skip the notice only when the signer explicitly opts in. */
+export function labExemptionsEnabled() {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      return localStorage.getItem('wart.signer.labExemptions') === '1';
+    }
+  } catch {
+    /* */
+  }
+  return false;
 }
 
 export function ticketNeedsNoticeProof(ticketId, { labDemo } = {}) {
   const id = String(ticketId || '');
   if (!id) return false;
-  if (labDemo || /^lab-demo-/.test(id)) return false;
+  if (labExemptionsEnabled() && (labDemo || /^lab-demo-/.test(id))) return false;
   if (/^wart-pool-rotate-/.test(id)) return false;
   return true;
 }

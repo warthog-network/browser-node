@@ -9,6 +9,13 @@ export { DEFAULT_POOL_API } from './poolApi.js';
 import { DEFAULT_POOL_API, defaultPoolApi } from './poolApi.js';
 import { CLIENT_VERSION } from './clientVersion.js';
 import { reportSignerSafety } from './signerSafety.js';
+import {
+  evaluatePayoutBinding,
+  priorPayoutHash,
+  priorPayoutTicket,
+  rememberPayoutNonce,
+  rememberPayoutTicket,
+} from './payoutBind.js';
 
 const ENABLED_KEY = 'wart.poolSigner.enabled';
 const PANEL_KEY = 'wart.poolSigner.panelOpen';
@@ -1758,7 +1765,88 @@ async function ensureD1Paillier(share, api) {
   return share;
 }
 
-async function sign3pAsRole1(share, req, api) {
+/**
+ * Refuse R1 / d2 unless the ceremony hash is the Warthog transfer of this
+ * notice (or, for a rotate sweep, of the ticket) and the pin is on this
+ * tab's DeFi node. Failure does not sign.
+ */
+async function bindPayoutOrRefuse(req, api, notice) {
+  const rotate = /^wart-pool-rotate-/.test(String(req?.ticketId || ''));
+  const toAddress = notice?.toAddress || (rotate ? req?.toAddress : null);
+  const amountE8 = notice?.amountE8 != null ? notice.amountE8 : rotate ? req?.amountE8 : null;
+  if (!toAddress || amountE8 == null) {
+    return {
+      ok: false,
+      reasons: ['payout hash: proven notice destination and amount are required'],
+    };
+  }
+  let prep;
+  try {
+    prep = await poolPost(api, {
+      action: 'pool3p_prepare',
+      ticketId: req.ticketId,
+      toAddress,
+      amountE8,
+    });
+  } catch (e) {
+    return { ok: false, reasons: [`payout prepare failed: ${e?.message || e}`] };
+  }
+  if (prep?.alreadyPaid) return { ok: false, reasons: ['ticket already paid'] };
+  if (!prep || prep.ok === false || !prep.hashHex) {
+    return { ok: false, reasons: [prep?.error || 'payout prepare returned no transfer hash'] };
+  }
+  const { fetchLocalBlockHash, isLocalDefiNodeLive } = await import('./localWartChain.js');
+  if (!isLocalDefiNodeLive()) {
+    return {
+      ok: false,
+      reasons: ['DeFi WASM node not running — payout hash is not checked on this tab'],
+    };
+  }
+  let localPinHash;
+  try {
+    localPinHash = await fetchLocalBlockHash(prep.pinHeight);
+  } catch (e) {
+    return { ok: false, reasons: [`payout pin: ${e?.message || e}`] };
+  }
+  const ev = evaluatePayoutBinding({
+    toAddress,
+    amountE8,
+    pinHash: prep.pinHash,
+    pinHeight: prep.pinHeight,
+    nonceId: prep.nonceId,
+    feeE8: prep.feeE8,
+    hashHex: prep.hashHex,
+    localPinHash,
+    priorHash: priorPayoutHash(prep.fromAddress, prep.nonceId),
+    priorTicket: priorPayoutTicket(req.ticketId),
+  });
+  if (!ev.ok) return { ...ev, prep };
+  if (!rememberPayoutNonce(prep.fromAddress, prep.nonceId, ev.hashHex)) {
+    return {
+      ok: false,
+      reasons: ['payout nonce was not recorded — refusing to sign'],
+      prep,
+    };
+  }
+  if (
+    !rememberPayoutTicket(req.ticketId, {
+      toAddress,
+      amountE8,
+      pinHeight: prep.pinHeight,
+      nonceId: prep.nonceId,
+      hashHex: ev.hashHex,
+    })
+  ) {
+    return {
+      ok: false,
+      reasons: ['payout ticket was not recorded — refusing to sign'],
+      prep,
+    };
+  }
+  return { ...ev, prep };
+}
+
+async function sign3pAsRole1(share, req, api, notice) {
   if (fatalTickets.has(req.ticketId)) {
     const prev = String(fatalTickets.get(req.ticketId) || '');
     if (!/rekey denied|d1·G ≠|wrong tab|missing Paillier/i.test(prev)) {
@@ -1827,13 +1915,17 @@ async function sign3pAsRole1(share, req, api) {
       error: 'd1 R1 already posted in another tab — use the dealer that holds k1',
     };
   }
-  if (!k1 || !st.haveR1) {
-    const prep = await poolPost(api, {
-      action: 'pool3p_prepare',
+  const bound = await bindPayoutOrRefuse(req, api, notice);
+  if (!bound.ok) {
+    return {
+      ok: false,
+      waiting: false,
       ticketId: req.ticketId,
-      toAddress: req.toAddress || st.toAddress,
-      amountE8: req.amountE8 || st.amountE8,
-    });
+      error: (bound.reasons || []).join('; ') || 'payout binding failed',
+    };
+  }
+  if (!k1 || !st.haveR1) {
+    const prep = bound.prep;
     const rnd = clientSignRound1();
     k1 = { ...rnd, hashHex: prep.hashHex };
     const r1 = await poolPost(api, {
@@ -1842,8 +1934,8 @@ async function sign3pAsRole1(share, req, api) {
       signerId: ready.signerId,
       R1Hex: rnd.R1Hex,
       hashHex: prep.hashHex,
-      amountE8: req.amountE8 || st.amountE8,
-      toAddress: req.toAddress || st.toAddress,
+      amountE8: prep.amountE8,
+      toAddress: prep.toAddress,
     });
     if (r1?.ok === false) {
       return { ok: false, ticketId: req.ticketId, error: r1.error || 'R1 rejected', waiting: true };
@@ -1857,12 +1949,22 @@ async function sign3pAsRole1(share, req, api) {
   if (!st.hasPartial) {
     return { ok: true, waiting: true, status: st.status, ticketId: req.ticketId };
   }
+  const finishHash = String(bound.prep?.hashHex || '').replace(/^0x/i, '').toLowerCase();
+  const sessionHash = String(st.hashHex || k1.hashHex || '').replace(/^0x/i, '').toLowerCase();
+  if (!finishHash || finishHash !== sessionHash) {
+    return {
+      ok: false,
+      waiting: false,
+      ticketId: req.ticketId,
+      error: 'session hash ≠ payout bound to the notice',
+    };
+  }
   const tryFinish = () =>
     clientSignFinish({
       k1Hex: k1.k1Hex,
       rHex: st.rHex,
       ciphertext: st.ciphertext,
-      hashHex: st.hashHex || k1.hashHex,
+      hashHex: finishHash,
       clientSecret: ready,
       publicKey: poolPub,
       RHex: st.RHex,
@@ -1902,7 +2004,7 @@ async function sign3pAsRole1(share, req, api) {
       action: 'pool3p_submit',
       ticketId: req.ticketId,
       signature65: fin.signature65,
-      hashHex: st.hashHex || k1.hashHex,
+      hashHex: finishHash,
     });
     dropK1(req.ticketId);
     fatalTickets.delete(req.ticketId);
@@ -2093,16 +2195,42 @@ export async function contributeOpen(share, api = defaultPoolApi()) {
       // scalar posting every poll was just "d2 refused" noise in the journal.
       const h2 = p3?.holder2 || p3?.holders?.['2']?.signerId || null;
       if (canOfferD2 && h2 && h2 !== share.signerId) canOfferD2 = false;
+      const willSign = canOfferD2 || (is3pShare(share) && role === 1);
+      let payReq = req;
+      if (willSign) {
+        const bound = await bindPayoutOrRefuse(req, api, verify.notice || null);
+        if (!bound.ok) {
+          const error = (bound.reasons || []).join('; ') || 'payout binding failed';
+          const skipVerify = {
+            ...(verify || {}),
+            reasons: bound.reasons?.length ? bound.reasons : [error],
+          };
+          results.push({
+            ticketId: req.ticketId,
+            skipped: true,
+            waiting: false,
+            error,
+            verify: skipVerify,
+          });
+          if (is3pShare(share)) await reportSkip(api, share, req, skipVerify);
+          continue;
+        }
+        payReq = {
+          ...req,
+          toAddress: bound.prep?.toAddress || req.toAddress,
+          amountE8: bound.prep?.amountE8 ?? req.amountE8,
+        };
+      }
       if (canOfferD2) {
         r = await postD2Offer(
           { ...share, role: 2, userShareHex: d2Hex },
-          req,
+          payReq,
           api,
           p3,
           d2Hex,
         );
         if (role === 1 && r && !r.fatal) {
-          const fin = await sign3pAsRole1(share, req, api);
+          const fin = await sign3pAsRole1(share, req, api, verify.notice || null);
           if (fin?.fatal) {
             results.push({ ticketId: req.ticketId, ...fin, verify });
             continue;
@@ -2112,7 +2240,7 @@ export async function contributeOpen(share, api = defaultPoolApi()) {
       } else if (share.waitlist || role === 0) {
         r = { ok: true, orbitOnly: true, ticketId: req.ticketId };
       } else if (is3pShare(share) && role === 1) {
-        r = await sign3pAsRole1(share, req, api);
+        r = await sign3pAsRole1(share, req, api, verify.notice || null);
         if (r?.fatal) {
           results.push({ ticketId: req.ticketId, ...r, verify });
           continue;

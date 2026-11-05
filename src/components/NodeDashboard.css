@@ -1868,3 +1868,206 @@
 .update-banner__auto input {
   margin: 0;
 }
+
+/* --- pool rotation step gauge (RotationGauge.jsx) --- */
+.pool-signer__rot {
+  margin: 0.55rem 0 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--text-2);
+  font-size: 0.74rem;
+}
+
+.pool-signer__rot.is-done {
+  border-color: var(--ok-line);
+  background: var(--ok-soft);
+}
+
+.pool-signer--eth .pool-signer__rot {
+  border-color: rgba(154, 168, 255, 0.28);
+  background: rgba(154, 168, 255, 0.1);
+}
+
+.pool-signer--eth .pool-signer__rot.is-done {
+  border-color: var(--ok-line);
+  background: var(--ok-soft);
+}
+
+.pool-signer__rot-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.pool-signer__rot-title {
+  color: var(--warn);
+  font-weight: 750;
+}
+
+.pool-signer__rot.is-done .pool-signer__rot-title,
+.pool-signer__rot-check {
+  color: var(--ok);
+}
+
+.pool-signer--eth .pool-signer__rot:not(.is-done) .pool-signer__rot-title {
+  color: #b8c0ff;
+}
+
+.pool-signer__rot-phase {
+  color: var(--text-2);
+}
+
+.pool-signer__rot-elapsed {
+  margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-3);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.pool-signer__rot-spinner {
+  display: inline-block;
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 200, 97, 0.25);
+  border-top-color: var(--warn);
+  animation: pool-signer-rot-spin 0.8s linear infinite;
+  flex: none;
+}
+
+.pool-signer--eth .pool-signer__rot-spinner {
+  border-color: rgba(154, 168, 255, 0.25);
+  border-top-color: #9aa8ff;
+}
+
+.pool-signer__rot-spinner.is-sm {
+  width: 0.62rem;
+  height: 0.62rem;
+  border-width: 2px;
+}
+
+@keyframes pool-signer-rot-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.pool-signer__rot-steps {
+  display: flex;
+  list-style: none;
+  margin: 0.5rem 0 0.35rem;
+  padding: 0;
+  gap: 0;
+}
+
+.pool-signer__rot-step {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  position: relative;
+  min-width: 0;
+  text-align: center;
+}
+
+.pool-signer__rot-step + .pool-signer__rot-step::before {
+  content: '';
+  position: absolute;
+  top: 0.6rem;
+  right: 50%;
+  width: 100%;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  z-index: 0;
+}
+
+.pool-signer__rot-step.is-done + .pool-signer__rot-step::before,
+.pool-signer__rot-step.is-done + .pool-signer__rot-step.is-current::before {
+  background: rgba(75, 211, 148, 0.45);
+}
+
+.pool-signer__rot-dot {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: 50%;
+  font-size: 0.62rem;
+  font-weight: 750;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-2);
+  color: rgba(183, 174, 175, 0.55);
+}
+
+.pool-signer__rot-step.is-done .pool-signer__rot-dot {
+  color: var(--ok);
+  border-color: var(--ok-line);
+  background: var(--ok-soft);
+}
+
+.pool-signer__rot-step.is-current .pool-signer__rot-dot {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.pool-signer--eth .pool-signer__rot-step.is-current .pool-signer__rot-dot {
+  border-color: #9aa8ff;
+  background: rgba(154, 168, 255, 0.15);
+}
+
+.pool-signer__rot-label {
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  color: var(--text-3);
+}
+
+.pool-signer__rot-step.is-pending .pool-signer__rot-label {
+  opacity: 0.45;
+}
+
+.pool-signer__rot-step.is-current .pool-signer__rot-label {
+  color: var(--warn);
+}
+
+.pool-signer--eth .pool-signer__rot-step.is-current .pool-signer__rot-label {
+  color: #b8c0ff;
+}
+
+.pool-signer__rot-step.is-done .pool-signer__rot-label {
+  color: var(--ok);
+}
+
+.pool-signer__rot-why {
+  margin: 0;
+  color: var(--text-2);
+  line-height: 1.35;
+}
+
+@media (max-width: 560px) {
+  .pool-signer__rot-elapsed {
+    margin-left: 0;
+  }
+
+  .pool-signer__rot-label {
+    font-size: 0.58rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pool-signer__rot-spinner {
+    animation-duration: 2.4s;
+  }
+}

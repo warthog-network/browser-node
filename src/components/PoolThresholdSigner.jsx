@@ -18,6 +18,7 @@ import {
 } from '../lib/poolSigner.js';
 import { formatVerifyLine } from '../lib/poolVerify.js';
 import TestnetBridgeBadge, { TestnetBridgeScope } from './TestnetBridgeBadge.jsx';
+import RotationGauge from './RotationGauge.jsx';
 
 const POLL_IDLE_MS = 2000;
 const POLL_HOT_MS = 800;
@@ -539,6 +540,7 @@ export default function PoolThresholdSigner() {
             {enabled ? `${seatLabel(share)} · ${liveN} live` : 'node only — not in the orbit'}
           </span>
         </div>
+        <RotationGauge asset="WART" rotation={pool3p?.rotation} />
         {error ? <p className="dash__error">{error}</p> : null}
       </section>
     );
@@ -717,6 +719,7 @@ export default function PoolThresholdSigner() {
           {pool3p.clientBorn ? ' · client-born 3P' : ''}
         </p>
       ) : null}
+      <RotationGauge asset="WART" rotation={pool3p?.rotation} />
       {pool3p?.rotation || rotateDue != null ? (
         <p className="pool-signer__rotate">
           Q rotate {pool3p?.rotation?.phase || 'idle'}

@@ -72,6 +72,9 @@ await esbuild.build({
     global: 'globalThis',
     __CLIENT_VERSION__: JSON.stringify(buildIdentity().version),
     __CLIENT_BUILT_AT__: JSON.stringify(buildIdentity().builtAt),
+    // Keep PUBLIC_* offline for extension (Vite replaces these in the web build).
+    'import.meta.env.PUBLIC_ROTATE_DEMO': JSON.stringify(process.env.PUBLIC_ROTATE_DEMO || ''),
+    'import.meta.env.PUBLIC_SNAPSHOT_URL': 'undefined',
   },
   // Do NOT bundle the multi‑MB Emscripten glue — loaded at runtime from /node/
   external: [],

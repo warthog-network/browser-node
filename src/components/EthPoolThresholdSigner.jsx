@@ -12,6 +12,7 @@ import {
 } from '../lib/ethPoolSigner.js';
 import { setSignerChain, signerChain } from '../lib/poolApi.js';
 import TestnetBridgeBadge, { TestnetBridgeScope } from './TestnetBridgeBadge.jsx';
+import RotationGauge from './RotationGauge.jsx';
 
 const TRANSIENT =
   /Failed to fetch|fetch failed|NetworkError|Load failed|aborted|AbortError|502|503|504|network|ECONNRESET/i;
@@ -321,6 +322,7 @@ export default function EthPoolThresholdSigner() {
             : 'not in ETH orbit'}
         </span>
       </div>
+      <RotationGauge asset="ETH" rotation={eth3p?.rotation} />
       {error ? <p className="dash__error">{error}</p> : null}
       {panelOpen ? (
         <>
@@ -374,49 +376,6 @@ export default function EthPoolThresholdSigner() {
                 </span>
               </div>
             </div>
-          ) : null}
-          {eth3p?.rotation && eth3p.rotation.phase && eth3p.rotation.phase !== 'idle' ? (
-            <ol className="pool-signer__steps" aria-label="ETH next-Q birth">
-              <li
-                className={
-                  eth3p.rotation.next?.seatsReady?.['1'] || eth3p.rotation.next?.seatsReady?.[1]
-                    ? 'is-done'
-                    : 'is-wait'
-                }
-              >
-                <span>n1</span> next e1{' '}
-                {eth3p.rotation.next?.seatsReady?.['1'] || eth3p.rotation.next?.seatsReady?.[1]
-                  ? 'born'
-                  : 'need birth'}
-              </li>
-              <li
-                className={
-                  eth3p.rotation.next?.seatsReady?.['2'] || eth3p.rotation.next?.seatsReady?.[2]
-                    ? 'is-done'
-                    : 'is-wait'
-                }
-              >
-                <span>n2</span> next e2{' '}
-                {eth3p.rotation.next?.seatsReady?.['2'] || eth3p.rotation.next?.seatsReady?.[2]
-                  ? 'born'
-                  : 'need birth'}
-              </li>
-              <li className={eth3p.rotation.phase === 'sweeping' || eth3p.rotation.phase === 'cutover' ? 'is-done' : 'is-wait'}>
-                <span>s</span> sweep {eth3p.rotation.phase === 'sweeping' ? 'in room' : eth3p.rotation.phase === 'cutover' || eth3p.rotation.sweepTxHash ? 'done' : 'idle'}
-              </li>
-              <li
-                className={
-                  eth3p.rotation.phase === 'idle' && !eth3p.rotation.next ? 'is-done' : 'is-wait'
-                }
-              >
-                <span>c</span> cutover{' '}
-                {eth3p.rotation.phase === 'idle' && !eth3p.rotation.next
-                  ? 'done'
-                  : eth3p.rotation.phase === 'cutover'
-                    ? 'in progress'
-                    : 'waiting'}
-              </li>
-            </ol>
           ) : null}
           {enabled ? (
             <ol className="pool-signer__steps" aria-label="ETH Lindell progress">

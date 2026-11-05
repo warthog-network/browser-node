@@ -34,3 +34,4 @@ npm-debug.log*
 
 # written by scripts/write-version.mjs at build time
 public/version.json
+.gauge-shots/

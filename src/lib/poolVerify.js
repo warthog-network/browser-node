@@ -60,6 +60,35 @@ export const V2_DEFAULTS = {
   l1RpcUrl: 'https://cartesi-bridge.duckdns.org/rpc',
 };
 
+/** Mode A reth --dev. A signer may override this with wart.signer.chainId. */
+export const SIGNER_CHAIN_ID = 31337;
+/** validateOutput is called this many blocks behind the L1 tip. */
+export const PAYOUT_L1_CONFIRMATIONS = 3;
+
+/**
+ * Signer-pinned L1. localStorage `wart.signer.l1Rpc` / `wart.signer.app` /
+ * `wart.signer.chainId` override the coordinator advertisement.
+ */
+export function signerL1Prefs() {
+  let l1Rpc = null;
+  let app = null;
+  let chainId = SIGNER_CHAIN_ID;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      l1Rpc = localStorage.getItem('wart.signer.l1Rpc') || null;
+      app = localStorage.getItem('wart.signer.app') || null;
+      const raw = localStorage.getItem('wart.signer.chainId');
+      if (raw) {
+        const n = raw.startsWith('0x') ? Number(raw) : Number(raw);
+        if (Number.isFinite(n)) chainId = n;
+      }
+    }
+  } catch {
+    /* */
+  }
+  return { l1Rpc, app, chainId };
+}
+
 let rollupsInfo = null;
 
 export function normalizeRollups(info) {
@@ -411,14 +440,12 @@ export async function fetchReleaseNotice(ticketId, opts = {}) {
     try {
       return await fetchReleaseNoticeV2(id, opts);
     } catch (e) {
-      const gqlError = e?.message || String(e);
-      const snap = await fetchJson(`${VERIFY_SNAPSHOT}${encodeURIComponent(id)}`);
-      if (snap && Object.prototype.hasOwnProperty.call(snap, 'rollups')) noteRollupsInfo(snap.rollups);
+      // A coordinator snapshot is not a notice. Signing falls closed.
       return {
-        source: 'pool-snapshot',
-        notice: normalizeSnapshotNotice(snap.notice || null),
-        voucherCount: Number(snap.voucherCount || 0),
-        gqlError,
+        source: 'v2-rpc',
+        notice: null,
+        voucherCount: 0,
+        gqlError: e?.message || String(e),
       };
     }
   }
@@ -466,16 +493,11 @@ export async function fetchReleaseNotice(ticketId, opts = {}) {
     }
     return { source: 'rollup-graphql', notice: best, voucherCount };
   } catch (e) {
-    // Keep the GraphQL failure: a snapshot notice without its epoch proof
-    // otherwise reads as "epoch not claimed" when the real fault is the fetch.
-    const gqlError = e?.message || String(e);
-    const snap = await fetchJson(`${VERIFY_SNAPSHOT}${encodeURIComponent(id)}`);
-    if (snap && Object.prototype.hasOwnProperty.call(snap, 'rollups')) noteRollupsInfo(snap.rollups);
     return {
-      source: 'pool-snapshot',
-      notice: normalizeSnapshotNotice(snap.notice || null),
-      voucherCount: Number(snap.voucherCount || 0),
-      gqlError,
+      source: 'rollup-graphql',
+      notice: null,
+      voucherCount: 0,
+      gqlError: e?.message || String(e),
     };
   }
 }
@@ -701,13 +723,23 @@ export async function verifyOpenRequest(req) {
     notice._hasProof &&
     (notice._api === 'v2' ? notice._rawDataHex : notice._payloadHex)
   ) {
-    const l1 =
-      notice._api === 'v2'
+    const prefs = signerL1Prefs();
+    const advertised = rollupsInfo?.app || null;
+    const app = prefs.app || advertised;
+    const appMismatch =
+      prefs.app &&
+      advertised &&
+      prefs.app.toLowerCase() !== advertised.toLowerCase();
+    const l1 = appMismatch
+      ? { ok: false, waiting: false, error: 'coordinator app ≠ signer pinned app' }
+      : notice._api === 'v2'
         ? await validateOutputOnL1({
             rawDataHex: notice._rawDataHex,
             proof: notice._proof,
-            app: rollupsInfo?.app,
-            rpcUrl: rollupsInfo?.l1RpcUrl || V2_DEFAULTS.l1RpcUrl,
+            app,
+            rpcUrl: prefs.l1Rpc || rollupsInfo?.l1RpcUrl || V2_DEFAULTS.l1RpcUrl,
+            confirmations: PAYOUT_L1_CONFIRMATIONS,
+            chainId: prefs.chainId,
           })
         : await validateNoticeOnL1({
             payloadHex: notice._payloadHex,
