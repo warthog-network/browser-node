@@ -5,9 +5,11 @@
  * (pin, pin height, nonce, fee, destination account, amount). The signer
  * recomputes that hash from the notice destination and amount. The pin must
  * be a block hash this tab's DeFi node already has. A nonce this signer
- * already bound to a different hash is refused. One ticket is bound to the
- * first (destination, amount, pin height, nonce) and is not signed again
- * for a different transfer: Warthog allows the same nonce at a new pin.
+ * already bound to a different payment is refused. The same destination,
+ * amount, and nonce at a new pin is the same unpaid transfer: Warthog
+ * accepts that nonce at the new pin, and a stale prepare has to be
+ * replaced or the sweep can never be signed. A different destination,
+ * amount, or nonce is still refused.
  */
 import { sha256 } from '@noble/hashes/sha256';
 
@@ -148,14 +150,17 @@ export function priorPayoutHash(from, nonceId, storage) {
   return hit ? normHex(hit) : null;
 }
 
-/** Append-only. A different hash for the same nonce is left untouched. */
-export function rememberPayoutNonce(from, nonceId, hashHex, storage) {
+/**
+ * Append-only unless `replace` is set. A pin refresh of the same payment
+ * passes replace; a different payment must not overwrite the hash.
+ */
+export function rememberPayoutNonce(from, nonceId, hashHex, storage, opts) {
   const s = storeOf(storage);
   const k = nonceKey(from, nonceId);
   const next = normHex(hashHex);
   if (!s || !k || !/^[0-9a-f]{64}$/.test(next)) return false;
   const all = readNonces(storage);
-  if (all[k] && all[k] !== next) return false;
+  if (all[k] && all[k] !== next && !opts?.replace) return false;
   all[k] = next;
   s.setItem(NONCE_KEY, JSON.stringify(all));
   return true;
@@ -182,8 +187,9 @@ export function priorPayoutTicket(ticketId, storage) {
 }
 
 /**
- * Append-only on destination, amount, pin height, and nonce.
- * A different transfer for this ticket is left untouched.
+ * One ticket, one payment. Destination, amount, and nonce are fixed.
+ * A new pin for that same payment replaces the stored hash. A different
+ * transfer is left untouched.
  */
 export function rememberPayoutTicket(ticketId, fields, storage) {
   const s = storeOf(storage);
@@ -205,13 +211,12 @@ export function rememberPayoutTicket(ticketId, fields, storage) {
   const all = readMap(TICKET_KEY, storage);
   const prev = priorPayoutTicket(id, storage);
   if (prev) {
-    const same =
+    const samePayment =
       prev.toAddress === to &&
       prev.amountE8 === amount &&
-      prev.pinHeight === pin &&
-      prev.nonceId === nonce &&
-      prev.hashHex === hash;
-    return same;
+      prev.nonceId === nonce;
+    if (!samePayment) return false;
+    if (prev.pinHeight === pin && prev.hashHex === hash) return true;
   }
   all[id] = { to, amount, pin, nonce, hash };
   s.setItem(TICKET_KEY, JSON.stringify(all));
@@ -264,22 +269,24 @@ export function evaluatePayoutBinding({
   } catch (e) {
     reasons.push(`payout fee: ${e?.message || e}`);
   }
-  if (priorHash && normHex(priorHash) !== recomputed) {
-    reasons.push('nonce already signed for a different payout');
-  }
-  if (priorTicket) {
-    let same = false;
+  let pinRefresh = false;
+  if (priorTicket && recomputed) {
     try {
-      same =
+      const samePayment =
         priorTicket.toAddress === normDest(toAddress) &&
         BigInt(priorTicket.amountE8) === e8(amountE8) &&
+        Number(priorTicket.nonceId) === Number(nonceId);
+      const samePin =
         Number(priorTicket.pinHeight) === Number(pinHeight) &&
-        Number(priorTicket.nonceId) === Number(nonceId) &&
         priorTicket.hashHex === recomputed;
+      if (!samePayment) reasons.push('ticket already bound to a different payout');
+      else if (!samePin) pinRefresh = true;
     } catch {
-      same = false;
+      reasons.push('ticket already bound to a different payout');
     }
-    if (!same) reasons.push('ticket already bound to a different payout');
   }
-  return { ok: reasons.length === 0, hashHex: recomputed, reasons };
+  if (priorHash && normHex(priorHash) !== recomputed && !pinRefresh) {
+    reasons.push('nonce already signed for a different payout');
+  }
+  return { ok: reasons.length === 0, hashHex: recomputed, pinRefresh, reasons };
 }

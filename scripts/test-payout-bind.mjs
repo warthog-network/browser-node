@@ -174,6 +174,34 @@ const again = evaluatePayoutBinding({
   priorTicket: priorPayoutTicket(ticketId, store),
 });
 check('same ticket and transfer passes', again.ok === true, again.reasons.join('; '));
+const refreshedHash = buildWartTransferHash({ ...fields, pinHeight: 101, nonceId: 1 });
+const refreshed = evaluatePayoutBinding({
+  toAddress: to48,
+  amountE8: 500000000n,
+  pinHash: pin,
+  pinHeight: 101,
+  nonceId: 1,
+  feeE8: 1,
+  hashHex: refreshedHash,
+  localPinHash: pin,
+  priorHash: hash,
+  priorTicket: priorPayoutTicket(ticketId, store),
+});
+check(
+  'same payment at a new pin is a refresh',
+  refreshed.ok === true && refreshed.pinRefresh === true,
+  refreshed.reasons.join('; '),
+);
+check(
+  'refresh replaces the ticket pin',
+  rememberPayoutTicket(ticketId, { ...ticketFields, pinHeight: 101, hashHex: refreshedHash }, store) === true
+    && priorPayoutTicket(ticketId, store).pinHeight === 101,
+);
+check(
+  'refresh replaces the nonce hash',
+  rememberPayoutNonce(from, 1, refreshedHash, store, { replace: true }) === true
+    && priorPayoutHash(from, 1, store) === refreshedHash,
+);
 const newPin = evaluatePayoutBinding({
   toAddress: to48,
   amountE8: 500000000n,

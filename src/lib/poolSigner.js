@@ -1821,7 +1821,9 @@ async function bindPayoutOrRefuse(req, api, notice) {
     priorTicket: priorPayoutTicket(req.ticketId),
   });
   if (!ev.ok) return { ...ev, prep };
-  if (!rememberPayoutNonce(prep.fromAddress, prep.nonceId, ev.hashHex)) {
+  if (!rememberPayoutNonce(prep.fromAddress, prep.nonceId, ev.hashHex, undefined, {
+    replace: !!ev.pinRefresh,
+  })) {
     return {
       ok: false,
       reasons: ['payout nonce was not recorded — refusing to sign'],
@@ -2089,11 +2091,25 @@ export async function contributeOpen(share, api = defaultPoolApi()) {
         const poolAddress =
           p3?.address || st.signers?.poolAddress || share.poolAddress;
         const inspect = await fetchInspectPool().catch(() => null);
-        const local = await verifyLocalForPayout({
-          poolAddress,
-          amountE8: req.amountE8,
-          spv: inspect?.pool?.spv,
-        });
+        // The SPV window is dozens of local block reads. A node that is up
+        // but slow after a reload used to hold this tick for minutes, so
+        // R1 was never posted and no skip was logged. One pin read in
+        // bindPayoutOrRefuse is the check that must still pass.
+        const local = await Promise.race([
+          verifyLocalForPayout({
+            poolAddress,
+            amountE8: req.amountE8,
+            spv: inspect?.pool?.spv,
+          }),
+          new Promise((resolve) => {
+            setTimeout(() => resolve({
+              ok: false,
+              skipped: true,
+              source: null,
+              reasons: ['DeFi WASM node did not finish the rotate check in time'],
+            }), 8000);
+          }),
+        ]);
         let covered = isLocalDefiNodeLive() && local.ok && !local.skipped;
         let coverSrc = covered ? 'local-wasm' : local.source || null;
         // After a tab reload the DeFi WASM triad is often not started yet.
